@@ -83,6 +83,19 @@ jobs:
           test -d KernelSU
           git submodule status --recursive
 
+      - name: Prepare KernelSU integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d KernelSU/kernel || { echo "KernelSU submodule is missing KernelSU/kernel" >&2; exit 1; }
+          if [[ ! -e drivers/kernelsu && ! -L drivers/kernelsu ]]; then
+            ln -s ../KernelSU/kernel drivers/kernelsu
+          fi
+          test -f drivers/kernelsu/Kconfig
+          test -f drivers/kernelsu/Makefile
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
+          grep -q 'kernelsu/' drivers/Makefile
+
       - name: Validate build scripts
         run: |
           set -euo pipefail

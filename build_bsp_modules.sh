@@ -5,7 +5,12 @@
 set -e
 cd "$(dirname "$0")"
 OUT=${OUT:-out_stageb}
-if [[ -n "${CLANG_DIR:-}" ]]; then\n    [[ -d "$CLANG_DIR" ]] || { echo "CLANG_DIR does not exist: $CLANG_DIR" >&2; exit 2; }\n    export PATH="$CLANG_DIR:$PATH"\nfi\ncommand -v clang >/dev/null || { echo "clang not found; set CLANG_DIR=/path/to/clang-r563880c/bin" >&2; exit 2; }\ncommand -v ld.lld >/dev/null || { echo "ld.lld not found" >&2; exit 2; }
+if [[ -n "${CLANG_DIR:-}" ]]; then
+    [[ -d "$CLANG_DIR" ]] || { echo "CLANG_DIR does not exist: $CLANG_DIR" >&2; exit 2; }
+    export PATH="$CLANG_DIR:$PATH"
+fi
+command -v clang >/dev/null || { echo "clang not found; set CLANG_DIR=/path/to/clang-r563880c/bin" >&2; exit 2; }
+command -v ld.lld >/dev/null || { echo "ld.lld not found" >&2; exit 2; }
 KDIR=$(pwd)/$OUT
 BSP_OUT=$KDIR/bsp_modules
 export BSP_MODULES_OUT=$BSP_OUT
@@ -58,11 +63,13 @@ for name in "$@"; do
     # warning is expected and harmless here.
     if make "${MAKEARGS[@]}" KBUILD_MODPOST_WARN=1 M="$od" src="$(pwd)/$src" modules > "$od/build.log" 2>&1; then
         ko=$(find "$od" -name "$name.ko" | head -1)
-        if [ -n "$ko" ]; then printf "  ✔ %-34s %9s B  (%s)\n" "$name.ko" "$(stat -c%s "$ko")" "${src#kernel_modules/}"; built=$((built+1));
+        if [ -n "$ko" ]; then printf "  ✔ %-34s %9s B  (%s)
+" "$name.ko" "$(stat -c%s "$ko")" "${src#kernel_modules/}"; built=$((built+1));
         else echo "  ~ $name: 编译通过但无 .ko"; failed=$((failed+1)); fi
     else
         err=$(grep -m1 -E "error:|Error [0-9]" "$od/build.log" | head -1)
-        printf "  ✗ %-34s %s\n" "$name" "${err:-见 $od/build.log}"; failed=$((failed+1))
+        printf "  ✗ %-34s %s
+" "$name" "${err:-见 $od/build.log}"; failed=$((failed+1))
     fi
 done
 echo "== 成功 $built / 失败 $failed =="

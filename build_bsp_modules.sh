@@ -72,3 +72,6 @@ for name in "$@"; do
     fi
 done
 echo "== 成功 $built / 失败 $failed =="
+if [ "$failed" -gt 0 ]; then
+    exit 1
+fi

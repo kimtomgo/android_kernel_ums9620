@@ -34,7 +34,6 @@ jobs:
       OUT: out_stock_lto2
       CROSS_COMPILE: aarch64-linux-gnu-
       CLANG_REVISION: 21b19c041de1f1df9b97fd9902ae5405c6cf8eb9
-      CLANG_DIR: ${{ runner.temp }}/clang-r563880c
     steps:
       - name: Checkout source and pinned submodules
         uses: actions/checkout@v6
@@ -59,6 +58,7 @@ jobs:
         if: steps.clang-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
+          CLANG_DIR="$RUNNER_TEMP/clang-r563880c"
           mkdir -p "$CLANG_DIR"
           archive="$RUNNER_TEMP/clang-r563880c.tar.gz"
           url="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/$CLANG_REVISION/clang-r563880c.tar.gz"
@@ -145,7 +145,7 @@ jobs:
           git rev-parse HEAD > artifacts/metadata/source-commit.txt
           git submodule status --recursive > artifacts/metadata/submodules.txt
           find "$OUT" -type f -name '*.ko' -exec cp -t artifacts/modules {} +
-          (cd artifacts && find . -type f ! -name SHA256SUMS -print0 | xargs -0 sha256sum > SHA256SUMS)
+          (cd artifacts && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > ../artifacts.SHA256SUMS.tmp && mv ../artifacts.SHA256SUMS.tmp SHA256SUMS)
           test -s artifacts/Image
 
       - name: Prepare AOSP boot image tools
@@ -169,7 +169,7 @@ jobs:
           fsck.erofs --help >/dev/null
 
       - name: Download and verify private device dump
-        if: ${{ inputs.package_device_images }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.package_device_images }}
         env:
           DEVICE_DUMP_URL: ${{ secrets.DEVICE_DUMP_URL }}
           DEVICE_DUMP_SHA256: ${{ secrets.DEVICE_DUMP_SHA256 }}
@@ -210,7 +210,7 @@ jobs:
           mkdir -p artifacts/images
           install -m 0644 "$IMGDIR/boot_stock.img" artifacts/images/
           install -m 0644 "$IMGDIR/vendor_dlkm_stock.img" artifacts/images/
-          (cd artifacts/images && sha256sum *.img > SHA256SUMS)
+          (cd artifacts/images && sha256sum ./*.img > SHA256SUMS)
 
       - name: Upload build artifacts
         if: always()

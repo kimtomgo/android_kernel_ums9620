@@ -59,7 +59,15 @@ for name in "$@"; do
     od="$BSP_OUT/$name"
     rm -rf "$od"
     mkdir -p "$od"
-    ln -snf "$(pwd)/$src/Kbuild" "$od/Kbuild"
+    if [[ -f "$src/Kbuild" ]]; then
+        ln -snf "$(pwd)/$src/Kbuild" "$od/Kbuild"
+    elif [[ -f "$src/Makefile" ]]; then
+        ln -snf "$(pwd)/$src/Makefile" "$od/Makefile"
+    else
+        echo "ERROR: $name: source directory has neither Kbuild nor Makefile: $src" >&2
+        failed=$((failed+1))
+        continue
+    fi
     ln -snf "$(pwd)/$src" "$od/source"
     if make "${MAKEARGS[@]}" KBUILD_MODPOST_WARN=1 M="$od" src="$(pwd)/$src" modules > "$od/build.log" 2>&1; then
         ko=$(find "$od" -type f -name "$name.ko" -print -quit)

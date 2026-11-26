@@ -5,7 +5,7 @@
 #   DUMP/vendor_boot.img
 #   DUMP/vendor_dlkm.img
 #   IMGDIR/vendor_dlkm_extract/lib/modules/
-# Overrides: OUT=... DUMP=... IMGDIR=... HOST_TOOLS_BIN=... BOOT_PARTITION_SIZE=67108864
+# Overrides: OUT=... DUMP=... IMGDIR=... HOST_TOOLS_BIN=... BOOT_PARTITION_SIZE=<verified bytes> (optional)
 set -euo pipefail
 cd "$(dirname "$0")"
 

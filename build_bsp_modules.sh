@@ -5,7 +5,7 @@
 set -e
 cd "$(dirname "$0")"
 OUT=${OUT:-out_stageb}
-export PATH=/home/twodays/AOSP/LineageOS-23/prebuilts/clang/host/linux-x86/clang-r563880c/bin:$PATH
+if [[ -n "${CLANG_DIR:-}" ]]; then\n    [[ -d "$CLANG_DIR" ]] || { echo "CLANG_DIR does not exist: $CLANG_DIR" >&2; exit 2; }\n    export PATH="$CLANG_DIR:$PATH"\nfi\ncommand -v clang >/dev/null || { echo "clang not found; set CLANG_DIR=/path/to/clang-r563880c/bin" >&2; exit 2; }\ncommand -v ld.lld >/dev/null || { echo "ld.lld not found" >&2; exit 2; }
 KDIR=$(pwd)/$OUT
 BSP_OUT=$KDIR/bsp_modules
 export BSP_MODULES_OUT=$BSP_OUT

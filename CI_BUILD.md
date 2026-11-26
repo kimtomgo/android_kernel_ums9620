@@ -14,7 +14,7 @@ Workflow: `.github/workflows/p720s11-kernel.yml`
 
 ## Run the workflow
 
-After this branch is pushed, the workflow runs automatically for `ci/**` branches and `master`. For manual runs, use **Actions → P720S11 kernel build → Run workflow**.
+After this branch is pushed, the workflow runs automatically for `ci/**` branches and `master`. It runs `actionlint` against the workflow before configuring or compiling the kernel. For manual runs, use **Actions → P720S11 kernel build → Run workflow**.
 
 The `build_bsp_modules` input accepts one or more space-separated `KO_MODULE_NAME` values. Leave it empty to build only the kernel and in-tree modules.
 

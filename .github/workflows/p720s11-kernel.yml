@@ -150,6 +150,8 @@ jobs:
           install -m 0755 "$RUNNER_TEMP/mkbootimg-src/mkbootimg.py" "$RUNNER_TEMP/android-host-tools/mkbootimg"
           install -m 0755 "$RUNNER_TEMP/mkbootimg-src/unpack_bootimg.py" "$RUNNER_TEMP/android-host-tools/unpack_bootimg"
           echo "$RUNNER_TEMP/android-host-tools" >> "$GITHUB_PATH"
+          echo "PYTHONPATH=$RUNNER_TEMP/mkbootimg-src:${PYTHONPATH:-}" >> "$GITHUB_ENV"
+          export PYTHONPATH="$RUNNER_TEMP/mkbootimg-src:${PYTHONPATH:-}"
           export PATH="$RUNNER_TEMP/android-host-tools:$PATH"
           mkbootimg --help >/dev/null
           unpack_bootimg --help >/dev/null

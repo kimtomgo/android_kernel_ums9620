@@ -13,7 +13,7 @@ OUT=${OUT:-out_stock_lto2}
 DUMP=${DUMP:-device_dump}
 IMGDIR=${IMGDIR:-out_images}
 HOST_TOOLS_BIN=${HOST_TOOLS_BIN:-}
-BOOT_PARTITION_SIZE=${BOOT_PARTITION_SIZE:-67108864}
+BOOT_PARTITION_SIZE=${BOOT_PARTITION_SIZE:-0}
 WORK="$IMGDIR/work_pack"
 
 # Replace the original developer's private AOSP out/host path with an explicit
@@ -34,8 +34,8 @@ done
     echo "ERROR: missing $IMGDIR/vendor_dlkm_extract/lib/modules; extract the device's vendor_dlkm first." >&2
     exit 1
 }
-[[ "$BOOT_PARTITION_SIZE" =~ ^[0-9]+$ ]] && (( BOOT_PARTITION_SIZE > 0 )) || {
-    echo "ERROR: BOOT_PARTITION_SIZE must be a positive byte count." >&2; exit 2;
+[[ "$BOOT_PARTITION_SIZE" =~ ^[0-9]+$ ]] || {
+    echo "ERROR: BOOT_PARTITION_SIZE must be a non-negative byte count." >&2; exit 2;
 }
 mkdir -p "$WORK" "$IMGDIR"
 
@@ -65,12 +65,16 @@ print("[mkbootimg] preserving stock parameters; replacing kernel and ramdisk")
 subprocess.run(cmd, check=True)
 PY
 BOOT_IMAGE_SIZE=$(stat -c%s "$IMGDIR/boot_stock.img")
-if (( BOOT_IMAGE_SIZE > BOOT_PARTITION_SIZE )); then
-    echo "ERROR: rebuilt boot image ($BOOT_IMAGE_SIZE) exceeds configured boot partition ($BOOT_PARTITION_SIZE)." >&2
-    exit 1
+if (( BOOT_PARTITION_SIZE > 0 )); then
+    if (( BOOT_IMAGE_SIZE > BOOT_PARTITION_SIZE )); then
+        echo "ERROR: rebuilt boot image ($BOOT_IMAGE_SIZE) exceeds configured boot partition ($BOOT_PARTITION_SIZE)." >&2
+        exit 1
+    fi
+    truncate -s "$BOOT_PARTITION_SIZE" "$IMGDIR/boot_stock.img"
+    echo "   boot image: $BOOT_IMAGE_SIZE bytes; padded to verified partition size: $BOOT_PARTITION_SIZE bytes"
+else
+    echo "   boot image: $BOOT_IMAGE_SIZE bytes; no partition padding (set BOOT_PARTITION_SIZE only after verifying it)"
 fi
-truncate -s "$BOOT_PARTITION_SIZE" "$IMGDIR/boot_stock.img"
-echo "   boot image: $BOOT_IMAGE_SIZE bytes; padded partition image: $BOOT_PARTITION_SIZE bytes"
 
 echo "== 2. vendor_dlkm.img =="
 STAGE="$WORK/vd"

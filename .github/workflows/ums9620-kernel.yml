@@ -14,7 +14,7 @@ on:
         required: true
         default: false
   push:
-    branches: [master]
+    branches: [master, 'ci/**']
     paths:
       - 'arch/arm64/**'
       - 'drivers/**'

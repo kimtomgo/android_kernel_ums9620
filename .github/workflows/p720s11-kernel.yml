@@ -1,0 +1,220 @@
+name: P720S11 kernel CI
+
+on:
+  push:
+    branches: [master, "ci/**"]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      build_bsp_modules:
+        description: "Build extra Unisoc BSP modules (provide module names below)"
+        type: boolean
+        required: false
+        default: false
+      bsp_modules:
+        description: "Space-separated KO_MODULE_NAME values; leave empty to skip"
+        type: string
+        required: false
+        default: ""
+      package_images:
+        description: "Rebuild raw boot/vendor_dlkm images using a private device dump"
+        type: boolean
+        required: false
+        default: false
+      boot_partition_size:
+        description: "boot partition size in bytes (must match the target phone)"
+        type: string
+        required: false
+        default: "67108864"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p720s11-kernel-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build UMS9620 / P720S11
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      CLANG_REVISION: clang-r563880c
+      CLANG_GIT_COMMIT: 21b19c041de1f1df9b97fd9902ae5405c6cf8eb9
+      OUT: out_stock_lto2
+      JOBS: "4"
+    steps:
+      - name: Checkout source and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Verify submodules
+        shell: bash
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --recursive
+          if git submodule status --recursive | grep -qE '^[+-]'; then
+            echo "One or more submodules are not at the recorded gitlink commit." >&2
+            git submodule status --recursive
+            exit 1
+          fi
+          git submodule status --recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential cpio flex gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu git libelf-dev libncurses-dev \
+            libssl-dev lz4 make pahole perl python3 rsync unzip wget zip
+
+      - name: Download pinned Android Clang
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/clang"
+          url="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/$CLANG_GIT_COMMIT/$CLANG_REVISION.tar.gz"
+          curl --fail --location --retry 4 --retry-delay 3 "$url" -o "$RUNNER_TEMP/clang.tar.gz"
+          tar -xzf "$RUNNER_TEMP/clang.tar.gz" -C "$RUNNER_TEMP/clang"
+          test -x "$RUNNER_TEMP/clang/bin/clang"
+          echo "CLANG_DIR=$RUNNER_TEMP/clang/bin" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/clang/bin/clang" --version
+          "$RUNNER_TEMP/clang/bin/ld.lld" --version
+
+      - name: Validate scripts
+        run: |
+          bash -n build_stock_lto.sh
+          bash -n build_bsp_modules.sh
+          bash -n package_stock_lto.sh
+          test -s stock_p720s11.config
+          test -s arch/arm64/configs/sprd_p720s11_defconfig
+
+      - name: Build kernel Image and in-tree modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$OUT" JOBS="$JOBS" CLANG_DIR="$CLANG_DIR" ./build_stock_lto.sh
+
+      - name: Build optional Unisoc BSP modules
+        if: ${{ inputs.build_bsp_modules && inputs.bsp_modules != '' }}
+        shell: bash
+        env:
+          BSP_MODULES: ${{ inputs.bsp_modules }}
+        run: |
+          set -euo pipefail
+          read -r -a modules <<< "$BSP_MODULES"
+          (("${#modules[@]}" > 0)) || exit 0
+          for module in "${modules[@]}"; do
+            [[ "$module" =~ ^[A-Za-z0-9_.-]+$ ]] || {
+              echo "Invalid module name: $module" >&2
+              exit 2
+            }
+          done
+          OUT="$OUT" CLANG_DIR="$CLANG_DIR" ./build_bsp_modules.sh "${modules[@]}"
+
+      - name: Prepare build artifact and manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/kernel
+          cp "$OUT/arch/arm64/boot/Image" artifacts/kernel/Image
+          cp "$OUT/.config" artifacts/kernel/kernel.config
+          [[ ! -f "$OUT/System.map" ]] || cp "$OUT/System.map" artifacts/kernel/
+          [[ ! -f "$OUT/Module.symvers" ]] || cp "$OUT/Module.symvers" artifacts/kernel/
+          find "$OUT" -type f -name '*.ko' -exec cp --parents '{}' artifacts/kernel/ \;
+          {
+            echo "repository=$GITHUB_REPOSITORY"
+            echo "commit=$GITHUB_SHA"
+            echo "ref=$GITHUB_REF"
+            echo "kernelrelease=$(make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- -s kernelrelease)"
+            echo "clang=$("$CLANG_DIR/clang" --version | head -n 1)"
+            echo "image_sha256=$(sha256sum "$OUT/arch/arm64/boot/Image" | awk '{print $1}')"
+            echo "module_count=$(find "$OUT" -type f -name '*.ko' | wc -l)"
+          } > artifacts/kernel/build-manifest.txt
+
+      - name: Prepare Android boot image tools
+        if: ${{ inputs.package_images }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends erofs-utils lz4 cpio
+          git clone --filter=blob:none https://android.googlesource.com/platform/system/tools/mkbootimg "$RUNNER_TEMP/mkbootimg-src"
+          git -C "$RUNNER_TEMP/mkbootimg-src" checkout 97418f6a8b75340361231a85c188f90cc10fea4e
+          mkdir -p "$RUNNER_TEMP/aosp-tools"
+          cat > "$RUNNER_TEMP/aosp-tools/mkbootimg" <<'EOF'
+          #!/usr/bin/env bash
+          exec python3 "${MKBOOTIMG_SRC}/mkbootimg.py" "$@"
+          EOF
+          cat > "$RUNNER_TEMP/aosp-tools/unpack_bootimg" <<'EOF'
+          #!/usr/bin/env bash
+          exec python3 "${MKBOOTIMG_SRC}/unpack_bootimg.py" "$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/aosp-tools/"*
+          echo "MKBOOTIMG_SRC=$RUNNER_TEMP/mkbootimg-src" >> "$GITHUB_ENV"
+          echo "HOST_TOOLS_DIR=$RUNNER_TEMP/aosp-tools" >> "$GITHUB_ENV"
+
+      - name: Download and verify private device dump
+        if: ${{ inputs.package_images }}
+        shell: bash
+        env:
+          DEVICE_DUMP_URL: ${{ secrets.DEVICE_DUMP_URL }}
+          DEVICE_DUMP_SHA256: ${{ secrets.DEVICE_DUMP_SHA256 }}
+        run: |
+          set -euo pipefail
+          [[ -n "$DEVICE_DUMP_URL" ]] || {
+            echo "Set repository secret DEVICE_DUMP_URL to a private tar.gz archive." >&2
+            exit 1
+          }
+          [[ "$DEVICE_DUMP_SHA256" =~ ^[A-Fa-f0-9]{64}$ ]] || {
+            echo "Set DEVICE_DUMP_SHA256 to the archive's 64-character SHA-256." >&2
+            exit 1
+          }
+          curl --fail --location --retry 4 --retry-delay 3 "$DEVICE_DUMP_URL" -o "$RUNNER_TEMP/device-dump.tar.gz"
+          echo "$DEVICE_DUMP_SHA256  $RUNNER_TEMP/device-dump.tar.gz" | sha256sum --check -
+          mkdir -p "$RUNNER_TEMP/device-input"
+          tar -xzf "$RUNNER_TEMP/device-dump.tar.gz" -C "$RUNNER_TEMP/device-input"
+          test -s "$RUNNER_TEMP/device-input/device_dump/boot_a.img"
+          test -s "$RUNNER_TEMP/device-input/device_dump/vendor_dlkm.img"
+          test -d "$RUNNER_TEMP/device-input/vendor_dlkm_extract/lib/modules"
+          echo "DUMP=$RUNNER_TEMP/device-input/device_dump" >> "$GITHUB_ENV"
+          echo "IMGDIR=$RUNNER_TEMP/device-input/out_images" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/device-input/out_images"
+          cp -a "$RUNNER_TEMP/device-input/vendor_dlkm_extract" "$RUNNER_TEMP/device-input/out_images/"
+
+      - name: Package raw boot and vendor_dlkm images
+        if: ${{ inputs.package_images }}
+        shell: bash
+        env:
+          BOOT_PARTITION_SIZE: ${{ inputs.boot_partition_size }}
+        run: |
+          set -euo pipefail
+          OUT="$OUT" DUMP="$DUMP" IMGDIR="$IMGDIR" \
+            HOST_TOOLS_DIR="$HOST_TOOLS_DIR" \
+            BOOT_PARTITION_SIZE="$BOOT_PARTITION_SIZE" \
+            ./package_stock_lto.sh
+          mkdir -p artifacts/partition-images
+          cp "$IMGDIR/boot_stock.img" artifacts/partition-images/
+          cp "$IMGDIR/vendor_dlkm_stock.img" artifacts/partition-images/
+          sha256sum artifacts/partition-images/*.img > artifacts/partition-images/SHA256SUMS
+
+      - name: Upload kernel build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: p720s11-kernel-${{ github.sha }}
+          path: artifacts/kernel/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload raw partition images
+        if: ${{ inputs.package_images }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: p720s11-raw-images-${{ github.sha }}
+          path: artifacts/partition-images/
+          if-no-files-found: error
+          retention-days: 7

@@ -208,6 +208,17 @@ jobs:
           cp build_package.log dist/logs/
           (cd dist/images && sha256sum boot_stock.img vendor_dlkm_stock.img > SHA256SUMS)
 
+      - name: Finalize artifact checksums and logs
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/logs
+          [[ ! -f build_package.log ]] || cp build_package.log dist/logs/
+          if [[ -d dist ]]; then
+            (cd dist && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
+          fi
+
       - name: Upload kernel artifacts
         if: always()
         uses: actions/upload-artifact@v4

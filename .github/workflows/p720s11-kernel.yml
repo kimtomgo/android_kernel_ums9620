@@ -171,10 +171,43 @@ jobs:
           curl -fL --retry 3 --retry-delay 2 "$DEVICE_DUMP_URL" -o "$archive"
           echo "$DEVICE_DUMP_SHA256  $archive" | sha256sum -c -
           mkdir -p device-inputs
-          tar -tzf "$archive" | grep -Fxq "device_dump/boot_a.img"
-          tar -tzf "$archive" | grep -Fxq "device_dump/vendor_boot.img"
-          tar -tzf "$archive" | grep -Fxq "device_dump/vendor_dlkm.img"
-          tar -tzf "$archive" | grep -Eq '^vendor_dlkm_extract/lib/modules/[^/]+\.ko$'
+          tar -tzf "$archive" > "$RUNNER_TEMP/device-dump-files.txt"
+          grep -Fxq "device_dump/boot_a.img" "$RUNNER_TEMP/device-dump-files.txt"
+          grep -Fxq "device_dump/vendor_boot.img" "$RUNNER_TEMP/device-dump-files.txt"
+          grep -Fxq "device_dump/vendor_dlkm.img" "$RUNNER_TEMP/device-dump-files.txt"
+          grep -Eq '^vendor_dlkm_extract/lib/modules/[^/]+\.ko
+          test -s device-inputs/device_dump/boot_a.img
+          test -s device-inputs/device_dump/vendor_boot.img
+          test -s device-inputs/device_dump/vendor_dlkm.img
+          test -d device-inputs/vendor_dlkm_extract/lib/modules
+
+      - name: Rebuild stock-derived boot and vendor_dlkm images
+        if: ${{ inputs.package_device_images }}
+        env:
+          HOST_TOOLS_BIN: ${{ runner.temp }}/android-host-tools
+          DUMP: device-inputs/device_dump
+          IMGDIR: device-inputs
+          BOOT_PARTITION_SIZE: "67108864"
+        run: |
+          set -euo pipefail
+          OUT="$OUT" DUMP="$DUMP" IMGDIR="$IMGDIR" \
+            HOST_TOOLS_BIN="$HOST_TOOLS_BIN" BOOT_PARTITION_SIZE="$BOOT_PARTITION_SIZE" \
+            ./package_stock_lto.sh
+          mkdir -p artifacts/images
+          install -m 0644 "$IMGDIR/boot_stock.img" artifacts/images/
+          install -m 0644 "$IMGDIR/vendor_dlkm_stock.img" artifacts/images/
+          (cd artifacts/images && sha256sum *.img > SHA256SUMS)
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: p720s11-kernel-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
+ "$RUNNER_TEMP/device-dump-files.txt"
           tar -xzf "$archive" -C device-inputs
           test -s device-inputs/device_dump/boot_a.img
           test -s device-inputs/device_dump/vendor_boot.img

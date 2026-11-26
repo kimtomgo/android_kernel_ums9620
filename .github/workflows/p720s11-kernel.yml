@@ -36,7 +36,7 @@ jobs:
       CLANG_REVISION: 21b19c041de1f1df9b97fd9902ae5405c6cf8eb9
     steps:
       - name: Checkout source and pinned submodules
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 1
@@ -56,6 +56,8 @@ jobs:
 
       - name: Download pinned Android Clang r563880c
         if: steps.clang-cache.outputs.cache-hit != 'true'
+        env:
+          CLANG_DIR: ${{ runner.temp }}/clang-r563880c
         run: |
           set -euo pipefail
           CLANG_DIR="$RUNNER_TEMP/clang-r563880c"
@@ -214,7 +216,7 @@ jobs:
 
       - name: Upload build artifacts
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: p720s11-kernel-${{ github.sha }}
           path: artifacts/

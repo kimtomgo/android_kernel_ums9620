@@ -204,10 +204,9 @@ jobs:
           HOST_TOOLS_BIN: ${{ runner.temp }}/android-host-tools
           DUMP: device-inputs/device_dump
           IMGDIR: device-inputs
-          BOOT_PARTITION_SIZE: "67108864"
         run: |
           set -euo pipefail
-          OUT="$OUT" DUMP="$DUMP" IMGDIR="$IMGDIR" HOST_TOOLS_BIN="$HOST_TOOLS_BIN" BOOT_PARTITION_SIZE="$BOOT_PARTITION_SIZE" ./package_stock_lto.sh
+          OUT="$OUT" DUMP="$DUMP" IMGDIR="$IMGDIR" HOST_TOOLS_BIN="$HOST_TOOLS_BIN" ./package_stock_lto.sh
           mkdir -p artifacts/images
           install -m 0644 "$IMGDIR/boot_stock.img" artifacts/images/
           install -m 0644 "$IMGDIR/vendor_dlkm_stock.img" artifacts/images/

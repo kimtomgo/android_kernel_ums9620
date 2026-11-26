@@ -3,16 +3,28 @@
 set -e
 cd "$(dirname "$0")"
 OUT=${OUT:-out_stock_lto2}
-export PATH=/home/twodays/AOSP/LineageOS-23/prebuilts/clang/host/linux-x86/clang-r563880c/bin:$PATH
+# CI/local toolchain selection: callers may provide CLANG_BIN; otherwise use PATH.
+if [[ -n "${CLANG_BIN:-}" ]]; then
+  [[ -x "$CLANG_BIN/clang" ]] || { echo "CLANG_BIN 不存在或没有 clang: $CLANG_BIN" >&2; exit 1; }
+  export PATH="$CLANG_BIN:$PATH"
+fi
+command -v clang >/dev/null || { echo "找不到 clang，请设置 CLANG_BIN 或 PATH" >&2; exit 1; }
+command -v ld.lld >/dev/null || { echo "找不到 ld.lld，请检查 LLVM 工具链" >&2; exit 1; }
 CFG=$OUT/.config
 DEFCONFIG=arch/arm64/configs/sprd_p720s11_defconfig
 mkdir -p "$OUT"
 if [ ! -f "$CFG" ]; then
-  for cand in out_stock_lto2/.config out_lto/.config; do
-    if [ -f "$cand" ] && [ "$cand" != "$CFG" ]; then cp "$cand" "$CFG"; break; fi
-  done
+  BASE_CONFIG=${BASE_CONFIG:-stock_p720s11.config}
+  if [ -s "$BASE_CONFIG" ]; then
+    echo "[config] 使用仓库内基准配置: $BASE_CONFIG"
+    cp "$BASE_CONFIG" "$CFG"
+  else
+    for cand in out_stock_lto2/.config out_lto/.config; do
+      if [ -s "$cand" ] && [ "$cand" != "$CFG" ]; then cp "$cand" "$CFG"; break; fi
+    done
+  fi
 fi
-[ -f "$CFG" ] || { echo "缺少 $CFG"; exit 1; }
+[ -s "$CFG" ] || { echo "缺少 $CFG，且未找到 BASE_CONFIG"; exit 1; }
 python3 - "$CFG" "$DEFCONFIG" <<'PY'
 import re, sys
 cfg, deff = sys.argv[1], sys.argv[2]

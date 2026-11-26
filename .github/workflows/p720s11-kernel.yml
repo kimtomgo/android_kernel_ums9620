@@ -98,6 +98,11 @@ jobs:
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
           grep -q 'kernelsu/' drivers/Makefile
 
+      - name: Lint GitHub Actions workflow
+        run: |
+          set -euo pipefail
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/p720s11-kernel.yml
+
       - name: Validate build scripts
         run: |
           set -euo pipefail
@@ -201,7 +206,7 @@ jobs:
           test -d device-inputs/vendor_dlkm_extract/lib/modules
 
       - name: Rebuild stock-derived boot and vendor_dlkm images
-        if: ${{ inputs.package_device_images }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.package_device_images }}
         env:
           HOST_TOOLS_BIN: ${{ runner.temp }}/android-host-tools
           DUMP: device-inputs/device_dump

@@ -4,6 +4,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Keep srctree absolute for nested Kbuild sub-makes.
+export KBUILD_ABS_SRCTREE=1
+
 OUT=${OUT:-out_stageb}
 CLANG_BIN=${CLANG_BIN:-}
 CROSS_COMPILE=${CROSS_COMPILE:-aarch64-linux-gnu-}

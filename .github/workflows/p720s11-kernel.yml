@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: p720s11-kernel-${{ github.head_ref || github.ref }}
+  group: p720s11-kernel-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:

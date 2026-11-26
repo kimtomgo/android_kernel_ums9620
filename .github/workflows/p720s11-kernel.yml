@@ -2,11 +2,9 @@ name: P720S11 kernel build
 
 on:
   push:
-    branches:
-      - master
+    branches: [master]
   pull_request:
-    branches:
-      - master
+    branches: [master]
   workflow_dispatch:
     inputs:
       build_bsp_modules:
@@ -15,7 +13,7 @@ on:
         type: string
         default: ""
       package_device_images:
-        description: "Also rebuild boot_stock.img and vendor_dlkm_stock.img (requires DEVICE_DUMP_URL secrets)"
+        description: "Also rebuild boot_stock.img and vendor_dlkm_stock.img (requires device dump secrets)"
         required: false
         type: boolean
         default: false
@@ -47,11 +45,12 @@ jobs:
 
       - name: Install kernel and image build dependencies
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential cpio curl flex git libelf-dev \
-            libncurses-dev libssl-dev lz4 python3 python3-lz4 \
-            python3-pip rsync unzip wget zip \
+            bc bison build-essential cpio curl dwarves flex git libelf-dev \
+            libncurses-dev libssl-dev lz4 lzop python3 python3-lz4 \
+            rsync unzip wget zip zstd \
             binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu
           sudo apt-get clean
 
@@ -87,10 +86,10 @@ jobs:
           llvm-ar --version
           test -f stock_p720s11.config
           test -f arch/arm64/configs/sprd_p720s11_defconfig
-          test -f KernelSU/kernel/Makefile || test -d KernelSU
+          test -d KernelSU
           git submodule status --recursive
 
-      - name: Validate shell scripts
+      - name: Validate build scripts
         run: |
           set -euo pipefail
           bash -n build_stock_lto.sh
@@ -105,7 +104,7 @@ jobs:
           set -euo pipefail
           OUT="$OUT" CLANG_BIN="$CLANG_BIN" CROSS_COMPILE="$CROSS_COMPILE" ./build_stock_lto.sh
 
-      - name: Build selected Unisoc BSP modules
+      - name: Build selected UNISOC BSP modules
         if: ${{ inputs.build_bsp_modules != '' }}
         env:
           CLANG_BIN: ${{ runner.temp }}/clang-r563880c/bin
@@ -117,8 +116,11 @@ jobs:
           OUT="$OUT" CLANG_BIN="$CLANG_BIN" CROSS_COMPILE="$CROSS_COMPILE" ./build_bsp_modules.sh "${modules[@]}"
 
       - name: Collect kernel artifacts
+        env:
+          CLANG_BIN: ${{ runner.temp }}/clang-r563880c/bin
         run: |
           set -euo pipefail
+          export PATH="$CLANG_BIN:$PATH"
           mkdir -p artifacts/modules artifacts/metadata
           install -m 0644 "$OUT/arch/arm64/boot/Image" artifacts/Image
           cp "$OUT/.config" artifacts/metadata/kernel.config
@@ -133,14 +135,6 @@ jobs:
                 mkdir -p "artifacts/modules/$(dirname "$rel")"
                 cp -f "$ko" "artifacts/modules/$rel"
               done
-          if [[ -d "$OUT/bsp_modules" ]]; then
-            find "$OUT/bsp_modules" -type f -name '*.ko' -print0 \
-              | while IFS= read -r -d '' ko; do
-                  rel="${ko#"$OUT"/}"
-                  mkdir -p "artifacts/modules/$(dirname "$rel")"
-                  cp -f "$ko" "artifacts/modules/$rel"
-                done
-          fi
           (cd artifacts && find . -type f ! -name SHA256SUMS -print0 | xargs -0 sha256sum > SHA256SUMS)
           test -s artifacts/Image
 
@@ -156,6 +150,7 @@ jobs:
           install -m 0755 "$RUNNER_TEMP/mkbootimg-src/mkbootimg.py" "$RUNNER_TEMP/android-host-tools/mkbootimg"
           install -m 0755 "$RUNNER_TEMP/mkbootimg-src/unpack_bootimg.py" "$RUNNER_TEMP/android-host-tools/unpack_bootimg"
           echo "$RUNNER_TEMP/android-host-tools" >> "$GITHUB_PATH"
+          export PATH="$RUNNER_TEMP/android-host-tools:$PATH"
           mkbootimg --help >/dev/null
           unpack_bootimg --help >/dev/null
           mkfs.erofs --help >/dev/null
@@ -177,7 +172,7 @@ jobs:
           tar -tzf "$archive" | grep -Fxq "device_dump/boot_a.img"
           tar -tzf "$archive" | grep -Fxq "device_dump/vendor_boot.img"
           tar -tzf "$archive" | grep -Fxq "device_dump/vendor_dlkm.img"
-          tar -tzf "$archive" | grep -Eq '^vendor_dlkm_extract/lib/modules/[^/]+\.ko
+          tar -tzf "$archive" | grep -Eq '^vendor_dlkm_extract/lib/modules/[^/]+\.ko$'
           tar -xzf "$archive" -C device-inputs
           test -s device-inputs/device_dump/boot_a.img
           test -s device-inputs/device_dump/vendor_boot.img
@@ -187,7 +182,6 @@ jobs:
       - name: Rebuild stock-derived boot and vendor_dlkm images
         if: ${{ inputs.package_device_images }}
         env:
-          CLANG_BIN: ${{ runner.temp }}/clang-r563880c/bin
           HOST_TOOLS_BIN: ${{ runner.temp }}/android-host-tools
           DUMP: device-inputs/device_dump
           IMGDIR: device-inputs
@@ -203,41 +197,7 @@ jobs:
           (cd artifacts/images && sha256sum *.img > SHA256SUMS)
 
       - name: Upload build artifacts
-        if: always() && (success() || failure())
-        uses: actions/upload-artifact@v5
-        with:
-          name: p720s11-kernel-${{ github.sha }}
-          path: artifacts/
-          if-no-files-found: warn
-          compression-level: 0
-          retention-days: 14
-
-          tar -xzf "$archive" -C device-inputs
-          test -s device-inputs/device_dump/boot_a.img
-          test -s device-inputs/device_dump/vendor_boot.img
-          test -s device-inputs/device_dump/vendor_dlkm.img
-          test -d device-inputs/vendor_dlkm_extract/lib/modules
-
-      - name: Rebuild stock-derived boot and vendor_dlkm images
-        if: ${{ inputs.package_device_images }}
-        env:
-          CLANG_BIN: ${{ runner.temp }}/clang-r563880c/bin
-          HOST_TOOLS_BIN: ${{ runner.temp }}/android-host-tools
-          DUMP: device-inputs/device_dump
-          IMGDIR: device-inputs
-          BOOT_PARTITION_SIZE: "67108864"
-        run: |
-          set -euo pipefail
-          OUT="$OUT" DUMP="$DUMP" IMGDIR="$IMGDIR" \
-            HOST_TOOLS_BIN="$HOST_TOOLS_BIN" BOOT_PARTITION_SIZE="$BOOT_PARTITION_SIZE" \
-            ./package_stock_lto.sh
-          mkdir -p artifacts/images
-          install -m 0644 "$IMGDIR/boot_stock.img" artifacts/images/
-          install -m 0644 "$IMGDIR/vendor_dlkm_stock.img" artifacts/images/
-          (cd artifacts/images && sha256sum *.img > SHA256SUMS)
-
-      - name: Upload build artifacts
-        if: always() && (success() || failure())
+        if: always()
         uses: actions/upload-artifact@v5
         with:
           name: p720s11-kernel-${{ github.sha }}

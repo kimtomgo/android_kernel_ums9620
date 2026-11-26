@@ -56,8 +56,16 @@ for name in "$@"; do
     if [ -z "$src" ]; then echo "  !! $name: 找不到 Kbuild"; failed=$((failed+1)); continue; fi
     od="$BSP_OUT/$name"
     rm -rf "$od"; mkdir -p "$od"
-    ln -snf "$(pwd)/$src/Kbuild" "$od/Kbuild"
-    ln -snf "$(pwd)/$src"        "$od/source"
+    if [ -f "$src/Kbuild" ]; then
+        ln -snf "$(pwd)/$src/Kbuild" "$od/Kbuild"
+    elif [ -f "$src/Makefile" ]; then
+        ln -snf "$(pwd)/$src/Makefile" "$od/Makefile"
+    else
+        echo "  !! $name: $src 下既没有 Kbuild 也没有 Makefile"
+        failed=$((failed+1))
+        continue
+    fi
+    ln -snf "$(pwd)/$src" "$od/source"
     # KBUILD_MODPOST_WARN: BSP modules reference symbols exported by *other*
     # BSP modules, which modpost cannot see when building one module at a time.
     # Those are resolved at insmod time in modules.load order, so a modpost

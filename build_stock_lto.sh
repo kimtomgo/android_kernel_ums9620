@@ -5,6 +5,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Keep srctree absolute in nested Kbuild sub-makes (notably usr/include headers).
+export KBUILD_ABS_SRCTREE=1
+
 OUT=${OUT:-out_stock_lto2}
 CLANG_BIN=${CLANG_BIN:-}
 CROSS_COMPILE=${CROSS_COMPILE:-aarch64-linux-gnu-}

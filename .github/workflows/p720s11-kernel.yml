@@ -2,7 +2,7 @@ name: P720S11 kernel build
 
 on:
   push:
-    branches: [master]
+    branches: [master, 'ci/**']
   pull_request:
     branches: [master]
   workflow_dispatch:

@@ -17,10 +17,6 @@ jobs:
       - name: Lint kernel workflow
         run: |
           set -euo pipefail
-          go run github.com/rhysd/actionlint/cmd/actionlint@latest .github/workflows/p720s11-kernel.yml
-      - name: Lint kernel workflow
-        run: |
-          set -euo pipefail
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 .github/workflows/p720s11-kernel.yml
       - name: Print runner details
         run: |

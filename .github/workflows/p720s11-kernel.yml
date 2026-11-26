@@ -70,7 +70,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential cpio flex gcc-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu git libelf-dev libncurses-dev \
-            libssl-dev lz4 make pahole perl python3 rsync unzip wget zip
+            libssl-dev lz4 make pahole perl python3 python-is-python3 rsync unzip wget zip
 
       - name: Download pinned Android Clang
         shell: bash
@@ -180,11 +180,9 @@ jobs:
           tar -xzf "$RUNNER_TEMP/device-dump.tar.gz" -C "$RUNNER_TEMP/device-input"
           test -s "$RUNNER_TEMP/device-input/device_dump/boot_a.img"
           test -s "$RUNNER_TEMP/device-input/device_dump/vendor_dlkm.img"
-          test -d "$RUNNER_TEMP/device-input/vendor_dlkm_extract/lib/modules"
           echo "DUMP=$RUNNER_TEMP/device-input/device_dump" >> "$GITHUB_ENV"
           echo "IMGDIR=$RUNNER_TEMP/device-input/out_images" >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/device-input/out_images"
-          cp -a "$RUNNER_TEMP/device-input/vendor_dlkm_extract" "$RUNNER_TEMP/device-input/out_images/"
 
       - name: Package raw boot and vendor_dlkm images
         if: ${{ inputs.package_images }}

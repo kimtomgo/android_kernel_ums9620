@@ -22,6 +22,23 @@ command -v llvm-ar >/dev/null || { echo "ERROR: llvm-ar not found in PATH." >&2;
 command -v python3 >/dev/null || { echo "ERROR: python3 is required." >&2; exit 2; }
 
 mkdir -p "$OUT"
+
+# Kbuild 5.4 refuses an out-of-tree build when the source root contains
+# .config, even when O= points at a separate output directory. This
+# repository tracks a root .config, so preserve it outside the tree while
+# building and restore it on every normal shell exit (success or failure).
+SOURCE_CONFIG_BACKUP=""
+if [[ -f .config ]]; then
+    SOURCE_CONFIG_BACKUP=$(mktemp "${TMPDIR:-/tmp}/p720s11-source-config.XXXXXX")
+    mv .config "$SOURCE_CONFIG_BACKUP"
+    restore_source_config() {
+        if [[ -n "$SOURCE_CONFIG_BACKUP" && -f "$SOURCE_CONFIG_BACKUP" ]]; then
+            mv -f "$SOURCE_CONFIG_BACKUP" .config
+        fi
+    }
+    trap restore_source_config EXIT
+fi
+
 if [[ ! -f "$CFG" ]]; then
     # CI starts with a clean workspace: use the checked-in known-good config.
     if [[ -f stock_p720s11.config ]]; then

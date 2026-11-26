@@ -41,8 +41,8 @@ jobs:
     env:
       OUT: out_stock_lto2
       CLANG_REVISION: clang-r563880c
-      PACKAGE_IMAGES: ${{ inputs.package_images || 'false' }}
-      BUILD_BSP_MODULES: ${{ inputs.build_bsp_modules || 'true' }}
+      PACKAGE_IMAGES: ${{ github.event_name == 'workflow_dispatch' && inputs.package_images }}
+      BUILD_BSP_MODULES: ${{ github.event_name != 'workflow_dispatch' || inputs.build_bsp_modules }}
 
     steps:
       - name: Checkout kernel and submodules
@@ -166,15 +166,17 @@ jobs:
         run: |
           set -euo pipefail
           git clone --depth=1 https://android.googlesource.com/platform/system/tools/mkbootimg "$RUNNER_TEMP/android-mkbootimg"
-          cat > /usr/local/bin/mkbootimg <<EOF
+          mkdir -p "$RUNNER_TEMP/bin"
+          cat > "$RUNNER_TEMP/bin/mkbootimg" <<EOF
           #!/usr/bin/env bash
           exec python3 "$RUNNER_TEMP/android-mkbootimg/mkbootimg.py" "\$@"
           EOF
-          cat > /usr/local/bin/unpack_bootimg <<EOF
+          cat > "$RUNNER_TEMP/bin/unpack_bootimg" <<EOF
           #!/usr/bin/env bash
           exec python3 "$RUNNER_TEMP/android-mkbootimg/unpack_bootimg.py" "\$@"
           EOF
-          chmod +x /usr/local/bin/mkbootimg /usr/local/bin/unpack_bootimg
+          chmod +x "$RUNNER_TEMP/bin/mkbootimg" "$RUNNER_TEMP/bin/unpack_bootimg"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           command -v fsck.erofs
           command -v mkfs.erofs
           command -v mkbootimg

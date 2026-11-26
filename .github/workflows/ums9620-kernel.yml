@@ -92,7 +92,7 @@ jobs:
             echo "::error::KernelSU submodule did not provide KernelSU/kernel"
             exit 1
           }
-          if [[ ! -e drivers/kernelsu ]]; then
+          if [[ ! -e drivers/kernelsu && ! -L drivers/kernelsu ]]; then
             ln -s ../KernelSU/kernel drivers/kernelsu
           fi
           test -f drivers/kernelsu/Kconfig

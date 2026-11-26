@@ -1,0 +1,22 @@
+name: P720S11 CI runner smoke test
+
+on:
+  push:
+    branches: ['ci/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify runner and checkout
+        uses: actions/checkout@v4
+      - name: Print runner details
+        run: |
+          set -euo pipefail
+          echo "runner smoke test passed"
+          uname -a
+          git rev-parse --short HEAD

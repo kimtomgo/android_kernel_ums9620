@@ -23,10 +23,6 @@ done
 [[ -s "$OUT/arch/arm64/boot/Image" ]] || { echo "Missing $OUT/arch/arm64/boot/Image; build first." >&2; exit 1; }
 [[ -s "$DUMP/boot_a.img" ]] || { echo "Missing $DUMP/boot_a.img" >&2; exit 1; }
 [[ -s "$DUMP/vendor_dlkm.img" ]] || { echo "Missing $DUMP/vendor_dlkm.img" >&2; exit 1; }
-[[ -d "$IMGDIR/vendor_dlkm_extract/lib/modules" ]] || {
-    echo "Missing $IMGDIR/vendor_dlkm_extract/lib/modules (extract the matching stock vendor_dlkm first)." >&2
-    exit 1
-}
 [[ "$BOOT_PARTITION_SIZE" =~ ^[0-9]+$ ]] || { echo "BOOT_PARTITION_SIZE must be an integer byte count" >&2; exit 2; }
 
 mkdir -p "$WORK" "$IMGDIR"
@@ -74,41 +70,13 @@ echo "== 2. Rebuild vendor_dlkm.img =="
 STAGE="$WORK/vd"
 VDREF="$WORK/vdref"
 rm -rf "$STAGE" "$VDREF"
-mkdir -p "$STAGE/lib/modules" "$VDREF"
-cp -a "$IMGDIR/vendor_dlkm_extract/lib/modules/." "$STAGE/lib/modules/"
+mkdir -p "$STAGE" "$VDREF"
 fsck.erofs --extract="$VDREF" "$DUMP/vendor_dlkm.img" >/dev/null
-
-# Keep the target device's module metadata. The vendor_boot modules.load list
-# is not a vendor_dlkm file and is intentionally not fabricated here.
-for f in modules.load modules.dep modules.alias modules.softdep modules.load.cali modules.load.charger init.insmod.cfg; do
-    [[ ! -f "$VDREF/lib/modules/$f" ]] || cp -f "$VDREF/lib/modules/$f" "$STAGE/lib/modules/$f"
-done
-
-# Add modules present in the device dump but absent from the extracted staging
-# tree. Prefer a matching build output; otherwise retain the exact stock KO.
-added=0
-shopt -s nullglob
-for ko in "$VDREF/lib/modules/"*.ko; do
-    name="$(basename "$ko")"
-    [[ -f "$STAGE/lib/modules/$name" ]] && continue
-    built="$(find "$OUT" -type f -name "$name" -print -quit)"
-    if [[ -n "$built" ]]; then
-        cp -f "$built" "$STAGE/lib/modules/$name"
-        if command -v llvm-strip >/dev/null; then
-            llvm-strip --strip-debug "$STAGE/lib/modules/$name"
-        elif command -v aarch64-linux-gnu-strip >/dev/null; then
-            aarch64-linux-gnu-strip --strip-debug "$STAGE/lib/modules/$name"
-        fi
-    else
-        cp -f "$ko" "$STAGE/lib/modules/$name"
-    fi
-    chmod 644 "$STAGE/lib/modules/$name"
-    added=$((added+1))
-done
-shopt -u nullglob
-
-echo "   additional modules: $added"
-echo "   total modules: $(find "$STAGE/lib/modules" -maxdepth 1 -type f -name '*.ko' | wc -l)"
+# Rebuild from the exact target-device EROFS contents. Do not mix in a second
+# extracted image or silently replace modules with unverified build outputs.
+cp -a "$VDREF/." "$STAGE/"
+[[ -d "$STAGE/lib/modules" ]] || { echo "vendor_dlkm image has no lib/modules directory" >&2; exit 1; }
+echo "   stock modules: $(find "$STAGE/lib/modules" -type f -name '*.ko' | wc -l)"
 
 FC="$WORK/file_contexts"
 cat > "$FC" <<'EOT'

@@ -103,6 +103,15 @@ jobs:
           bash -n build_bsp_modules.sh
           bash -n package_stock_lto.sh
           git diff --check
+          # Fail early if the target kernel is missing any required non-GKI hooks.
+          grep -q 'ksu_handle_execveat' fs/exec.c
+          grep -q 'ksu_handle_post_execveat' fs/exec.c
+          grep -q 'ksu_handle_stat' fs/stat.c
+          grep -q 'ksu_handle_faccessat' fs/open.c
+          grep -q 'ksu_handle_sys_reboot' kernel/reboot.c
+          grep -q 'ksu_handle_setresuid' kernel/sys.c
+          grep -q 'ksu_handle_sys_read' fs/read_write.c
+          grep -q 'ksu_handle_input_handle_event' drivers/input/input.c
 
       - name: Build kernel Image and in-tree modules
         env:

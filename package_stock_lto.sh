@@ -63,6 +63,10 @@ fi
 for f in modules.load modules.dep modules.alias modules.softdep modules.load.cali modules.load.charger init.insmod.cfg; do
     [ -f "$WORK/vdref/lib/modules/$f" ] && cp -f "$WORK/vdref/lib/modules/$f" "$STAGE/lib/modules/$f"
 done
+# Some firmware stores the first-stage module list in vendor_boot's ramdisk.
+if [ ! -s "$STAGE/lib/modules/modules.load" ] && [ -s "$RAMDISK_LOAD" ]; then
+    cp -f "$RAMDISK_LOAD" "$STAGE/lib/modules/modules.load"
+fi
 # 2.3 额外模块：以设备上的 vendor_dlkm 为准（ROM 提取物里没有、但设备上有的），
 #     二进制优先用本次编译的（strip 后），没有则沿用设备上的
 added=0

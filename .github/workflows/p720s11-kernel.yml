@@ -2,7 +2,7 @@ name: P720S11 kernel build
 
 on:
   push:
-    branches: [master, 'ci/**']
+    branches: [master]
   pull_request:
     branches: [master]
   workflow_dispatch:
@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: p720s11-kernel-${{ github.ref }}
+  group: p720s11-kernel-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:

@@ -62,7 +62,7 @@ print(f"[config] imported {len(want)} KSU symbols from {deff}")
 PY
 
 scripts/config --file "$CFG" \
-  -e LTO_CLANG -d LTO_CLANG_FULL -e LTO_CLANG_THIN -e CFI_CLANG \
+  -e LTO_CLANG -e THINLTO -e CFI_CLANG \
   -e VENDOR_COMMON_COMPILE -e VENDOR_SOC_SPRD_COMPILE \
   -m TOUCHSCREEN_VENDOR_V2 -m TOUCHSCREEN_LCD_NOTIFY \
   -e KSU -d KSU_SUSFS -e KSU_MANUAL_HOOK -d KSU_TRACEPOINT_HOOK \
@@ -85,7 +85,16 @@ clang --version | head -n 1
 ld.lld --version | head -n 1
 echo "== Configuration =="
 make "${MAKE_ARGS[@]}" olddefconfig
-grep -E '^(CONFIG_(KSU|KSU_MANUAL_HOOK|LTO_CLANG_THIN|CFI_CLANG|VENDOR_COMMON_COMPILE|VENDOR_SOC_SPRD_COMPILE)=|# CONFIG_KSU_SUSFS is not set)' "$CFG" || true
+require_enabled() {
+    grep -qx "CONFIG_$1=y" "$CFG" || {
+        echo "ERROR: required config CONFIG_$1=y is not enabled after olddefconfig." >&2
+        exit 1
+    }
+}
+for symbol in LTO_CLANG THINLTO CFI_CLANG KSU KSU_MANUAL_HOOK VENDOR_COMMON_COMPILE VENDOR_SOC_SPRD_COMPILE; do
+    require_enabled "$symbol"
+done
+grep -E '^(CONFIG_(KSU|KSU_MANUAL_HOOK|LTO_CLANG|THINLTO|CFI_CLANG|VENDOR_COMMON_COMPILE|VENDOR_SOC_SPRD_COMPILE)=|# CONFIG_KSU_SUSFS is not set)' "$CFG"
 
 echo "== Build =="
 make "${MAKE_ARGS[@]}" -j"$(nproc)" Image modules

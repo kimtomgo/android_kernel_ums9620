@@ -13,7 +13,7 @@ on:
         type: string
         default: ""
       package_device_images:
-        description: "Also rebuild boot_stock.img and vendor_dlkm_stock.img (requires device dump secrets)"
+        description: "Also rebuild boot_stock.img and vendor_dlkm_stock.img (requires private device dump secrets)"
         required: false
         type: boolean
         default: false
@@ -35,7 +35,6 @@ jobs:
       CROSS_COMPILE: aarch64-linux-gnu-
       CLANG_REVISION: 21b19c041de1f1df9b97fd9902ae5405c6cf8eb9
       CLANG_DIR: ${{ runner.temp }}/clang-r563880c
-
     steps:
       - name: Checkout source and pinned submodules
         uses: actions/checkout@v6
@@ -43,16 +42,11 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
-      - name: Install kernel and image build dependencies
+      - name: Install kernel build dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential cpio curl dwarves flex git libelf-dev \
-            libncurses-dev libssl-dev lz4 lzop python3 python3-lz4 \
-            rsync unzip wget zip zstd \
-            binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu
-          sudo apt-get clean
+          sudo apt-get install -y --no-install-recommends bc bison build-essential cpio curl dwarves flex git libelf-dev libncurses-dev libssl-dev lz4 lzop python3 python3-lz4 rsync unzip wget zip zstd binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu
 
       - name: Restore Android Clang cache
         id: clang-cache
@@ -124,17 +118,11 @@ jobs:
           mkdir -p artifacts/modules artifacts/metadata
           install -m 0644 "$OUT/arch/arm64/boot/Image" artifacts/Image
           cp "$OUT/.config" artifacts/metadata/kernel.config
-          make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE="$CROSS_COMPILE" kernelrelease \
-            | tee artifacts/metadata/kernelrelease.txt
+          make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE="$CROSS_COMPILE" kernelrelease | tee artifacts/metadata/kernelrelease.txt
           clang --version > artifacts/metadata/clang-version.txt
           git rev-parse HEAD > artifacts/metadata/source-commit.txt
           git submodule status --recursive > artifacts/metadata/submodules.txt
-          find "$OUT" -type f -name '*.ko' -print0 \
-            | while IFS= read -r -d '' ko; do
-                rel="${ko#"$OUT"/}"
-                mkdir -p "artifacts/modules/$(dirname "$rel")"
-                cp -f "$ko" "artifacts/modules/$rel"
-              done
+          find "$OUT" -type f -name '*.ko' -exec cp -t artifacts/modules {} +
           (cd artifacts && find . -type f ! -name SHA256SUMS -print0 | xargs -0 sha256sum > SHA256SUMS)
           test -s artifacts/Image
 
@@ -165,49 +153,23 @@ jobs:
           DEVICE_DUMP_SHA256: ${{ secrets.DEVICE_DUMP_SHA256 }}
         run: |
           set -euo pipefail
-          [[ -n "$DEVICE_DUMP_URL" ]] || { echo "Missing repository secret DEVICE_DUMP_URL" >&2; exit 2; }
-          [[ "$DEVICE_DUMP_SHA256" =~ ^[A-Fa-f0-9]{64}$ ]] || { echo "Missing/invalid DEVICE_DUMP_SHA256 (64 hex characters)" >&2; exit 2; }
+          test -n "$DEVICE_DUMP_URL" || { echo "Missing DEVICE_DUMP_URL secret" >&2; exit 2; }
+          test "${#DEVICE_DUMP_SHA256}" -eq 64 || { echo "DEVICE_DUMP_SHA256 must be 64 hex characters" >&2; exit 2; }
           archive="$RUNNER_TEMP/p720s11-device-dump.tar.gz"
           curl -fL --retry 3 --retry-delay 2 "$DEVICE_DUMP_URL" -o "$archive"
           echo "$DEVICE_DUMP_SHA256  $archive" | sha256sum -c -
+          python3 - "$archive" <<'PY'
+          import sys, tarfile
+          with tarfile.open(sys.argv[1], "r:gz") as tf:
+              names = set(tf.getnames())
+          required = {"device_dump/boot_a.img", "device_dump/vendor_boot.img", "device_dump/vendor_dlkm.img"}
+          missing = required - names
+          if missing:
+              raise SystemExit("device dump archive missing: " + ", ".join(sorted(missing)))
+          if not any(n.startswith("vendor_dlkm_extract/lib/modules/") and n.endswith(".ko") for n in names):
+              raise SystemExit("archive must include vendor_dlkm_extract/lib/modules/*.ko")
+          PY
           mkdir -p device-inputs
-          tar -tzf "$archive" > "$RUNNER_TEMP/device-dump-files.txt"
-          grep -Fxq "device_dump/boot_a.img" "$RUNNER_TEMP/device-dump-files.txt"
-          grep -Fxq "device_dump/vendor_boot.img" "$RUNNER_TEMP/device-dump-files.txt"
-          grep -Fxq "device_dump/vendor_dlkm.img" "$RUNNER_TEMP/device-dump-files.txt"
-          grep -Eq '^vendor_dlkm_extract/lib/modules/[^/]+\.ko
-          test -s device-inputs/device_dump/boot_a.img
-          test -s device-inputs/device_dump/vendor_boot.img
-          test -s device-inputs/device_dump/vendor_dlkm.img
-          test -d device-inputs/vendor_dlkm_extract/lib/modules
-
-      - name: Rebuild stock-derived boot and vendor_dlkm images
-        if: ${{ inputs.package_device_images }}
-        env:
-          HOST_TOOLS_BIN: ${{ runner.temp }}/android-host-tools
-          DUMP: device-inputs/device_dump
-          IMGDIR: device-inputs
-          BOOT_PARTITION_SIZE: "67108864"
-        run: |
-          set -euo pipefail
-          OUT="$OUT" DUMP="$DUMP" IMGDIR="$IMGDIR" \
-            HOST_TOOLS_BIN="$HOST_TOOLS_BIN" BOOT_PARTITION_SIZE="$BOOT_PARTITION_SIZE" \
-            ./package_stock_lto.sh
-          mkdir -p artifacts/images
-          install -m 0644 "$IMGDIR/boot_stock.img" artifacts/images/
-          install -m 0644 "$IMGDIR/vendor_dlkm_stock.img" artifacts/images/
-          (cd artifacts/images && sha256sum *.img > SHA256SUMS)
-
-      - name: Upload build artifacts
-        if: always()
-        uses: actions/upload-artifact@v5
-        with:
-          name: p720s11-kernel-${{ github.sha }}
-          path: artifacts/
-          if-no-files-found: warn
-          compression-level: 0
-          retention-days: 14
- "$RUNNER_TEMP/device-dump-files.txt"
           tar -xzf "$archive" -C device-inputs
           test -s device-inputs/device_dump/boot_a.img
           test -s device-inputs/device_dump/vendor_boot.img
@@ -223,9 +185,7 @@ jobs:
           BOOT_PARTITION_SIZE: "67108864"
         run: |
           set -euo pipefail
-          OUT="$OUT" DUMP="$DUMP" IMGDIR="$IMGDIR" \
-            HOST_TOOLS_BIN="$HOST_TOOLS_BIN" BOOT_PARTITION_SIZE="$BOOT_PARTITION_SIZE" \
-            ./package_stock_lto.sh
+          OUT="$OUT" DUMP="$DUMP" IMGDIR="$IMGDIR" HOST_TOOLS_BIN="$HOST_TOOLS_BIN" BOOT_PARTITION_SIZE="$BOOT_PARTITION_SIZE" ./package_stock_lto.sh
           mkdir -p artifacts/images
           install -m 0644 "$IMGDIR/boot_stock.img" artifacts/images/
           install -m 0644 "$IMGDIR/vendor_dlkm_stock.img" artifacts/images/

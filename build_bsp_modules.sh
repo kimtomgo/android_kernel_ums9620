@@ -5,7 +5,13 @@
 set -e
 cd "$(dirname "$0")"
 OUT=${OUT:-out_stageb}
-export PATH=/home/twodays/AOSP/LineageOS-23/prebuilts/clang/host/linux-x86/clang-r563880c/bin:$PATH
+# CI/local toolchain selection.
+if [[ -n "${CLANG_BIN:-}" ]]; then
+    [[ -x "$CLANG_BIN/clang" ]] || { echo "CLANG_BIN 不存在或没有 clang: $CLANG_BIN" >&2; exit 1; }
+    export PATH="$CLANG_BIN:$PATH"
+fi
+command -v clang >/dev/null || { echo "找不到 clang，请设置 CLANG_BIN 或 PATH" >&2; exit 1; }
+command -v ld.lld >/dev/null || { echo "找不到 ld.lld，请检查 LLVM 工具链" >&2; exit 1; }
 KDIR=$(pwd)/$OUT
 BSP_OUT=$KDIR/bsp_modules
 export BSP_MODULES_OUT=$BSP_OUT

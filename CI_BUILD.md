@@ -52,7 +52,7 @@ vendor_dlkm_extract/
     ...
 ```
 
-Run the workflow manually with `package_device_images=true`. The job verifies the archive checksum, checks required files, preserves the stock boot header parameters while replacing the kernel and ramdisk, and rebuilds EROFS vendor_dlkm from the device's module inventory.
+Run the workflow manually with `package_device_images=true`. The job verifies the archive checksum, checks required files, preserves the stock boot header parameters while replacing the kernel and ramdisk, and rebuilds EROFS vendor_dlkm from the device's module inventory. The boot image is not padded to an assumed partition size; set `BOOT_PARTITION_SIZE` manually only after verifying the exact device partition size.
 
 ## Safety and validation
 

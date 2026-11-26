@@ -1,0 +1,230 @@
+name: P720S11 kernel build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      build_bsp_modules:
+        description: "Optional space-separated KO_MODULE_NAME values to build"
+        required: false
+        type: string
+        default: ""
+      package_device_images:
+        description: "Also rebuild boot_stock.img and vendor_dlkm_stock.img (requires private device dump secrets)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p720s11-kernel-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build UMS9620 / P720S11
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      OUT: out_stock_lto2
+      CROSS_COMPILE: aarch64-linux-gnu-
+      CLANG_REVISION: 21b19c041de1f1df9b97fd9902ae5405c6cf8eb9
+    steps:
+      - name: Checkout source and pinned submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install kernel build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bc bison build-essential cpio curl dwarves flex git libelf-dev libncurses-dev libssl-dev libc6-dev-arm64-cross lz4 lzop python3 python3-lz4 rsync unzip wget zip zstd binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu
+
+      - name: Restore Android Clang cache
+        id: clang-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/clang-r563880c
+          key: android-clang-r563880c-${{ env.CLANG_REVISION }}-linux-x86_64
+
+      - name: Download pinned Android Clang r563880c
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        env:
+          CLANG_DIR: ${{ runner.temp }}/clang-r563880c
+        run: |
+          set -euo pipefail
+          CLANG_DIR="$RUNNER_TEMP/clang-r563880c"
+          mkdir -p "$CLANG_DIR"
+          archive="$RUNNER_TEMP/clang-r563880c.tar.gz"
+          url="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/$CLANG_REVISION/clang-r563880c.tar.gz"
+          curl -fL --retry 3 --retry-delay 2 "$url" -o "$archive"
+          tar -xzf "$archive" -C "$CLANG_DIR"
+          test -x "$CLANG_DIR/bin/clang"
+          rm -f "$archive"
+
+      - name: Verify toolchain and source configuration
+        env:
+          CLANG_BIN: ${{ runner.temp }}/clang-r563880c/bin
+        run: |
+          set -euo pipefail
+          echo "$CLANG_BIN" >> "$GITHUB_PATH"
+          export PATH="$CLANG_BIN:$PATH"
+          clang --version | tee "$RUNNER_TEMP/clang-version.txt"
+          grep -F "5e96669f06077099aa41290cdb4c5e6fa0f59349" "$RUNNER_TEMP/clang-version.txt"
+          ld.lld --version
+          llvm-ar --version
+          test -f stock_p720s11.config
+          test -f arch/arm64/configs/sprd_p720s11_defconfig
+          test -d KernelSU
+          git submodule status --recursive
+
+      - name: Prepare KernelSU integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d KernelSU/kernel || { echo "KernelSU submodule is missing KernelSU/kernel" >&2; exit 1; }
+          if [[ ! -e drivers/kernelsu && ! -L drivers/kernelsu ]]; then
+            ln -s ../KernelSU/kernel drivers/kernelsu
+          fi
+          test -f drivers/kernelsu/Kconfig
+          test -f drivers/kernelsu/Makefile
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
+          grep -q 'kernelsu/' drivers/Makefile
+
+      - name: Lint GitHub Actions workflow
+        run: |
+          set -euo pipefail
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/p720s11-kernel.yml
+
+      - name: Validate build scripts
+        run: |
+          set -euo pipefail
+          bash -n build_stock_lto.sh
+          bash -n build_bsp_modules.sh
+          bash -n package_stock_lto.sh
+          git diff --check
+          # Fail early if the target kernel is missing any required non-GKI hooks.
+          grep -q 'ksu_handle_execveat' fs/exec.c
+          grep -q 'ksu_handle_post_execveat' fs/exec.c
+          grep -q 'ksu_handle_stat' fs/stat.c
+          grep -q 'ksu_handle_faccessat' fs/open.c
+          grep -q 'ksu_handle_sys_reboot' kernel/reboot.c
+          grep -q 'ksu_handle_setresuid' kernel/sys.c
+          grep -q 'ksu_handle_sys_read' fs/read_write.c
+          grep -q 'ksu_handle_input_handle_event' drivers/input/input.c
+
+      - name: Build kernel Image and in-tree modules
+        env:
+          CLANG_BIN: ${{ runner.temp }}/clang-r563880c/bin
+        run: |
+          set -euo pipefail
+          OUT="$OUT" CLANG_BIN="$CLANG_BIN" CROSS_COMPILE="$CROSS_COMPILE" ./build_stock_lto.sh
+
+      - name: Build selected UNISOC BSP modules
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_bsp_modules != '' }}
+        env:
+          CLANG_BIN: ${{ runner.temp }}/clang-r563880c/bin
+          BSP_MODULES: ${{ github.event_name == 'workflow_dispatch' && inputs.build_bsp_modules || '' }}
+        run: |
+          set -euo pipefail
+          read -r -a modules <<< "$BSP_MODULES"
+          test "${#modules[@]}" -gt 0
+          OUT="$OUT" CLANG_BIN="$CLANG_BIN" CROSS_COMPILE="$CROSS_COMPILE" ./build_bsp_modules.sh "${modules[@]}"
+
+      - name: Collect kernel artifacts
+        env:
+          CLANG_BIN: ${{ runner.temp }}/clang-r563880c/bin
+        run: |
+          set -euo pipefail
+          export PATH="$CLANG_BIN:$PATH"
+          mkdir -p artifacts/modules artifacts/metadata
+          install -m 0644 "$OUT/arch/arm64/boot/Image" artifacts/Image
+          cp "$OUT/.config" artifacts/metadata/kernel.config
+          make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE="$CROSS_COMPILE" kernelrelease | tee artifacts/metadata/kernelrelease.txt
+          clang --version > artifacts/metadata/clang-version.txt
+          git rev-parse HEAD > artifacts/metadata/source-commit.txt
+          git submodule status --recursive > artifacts/metadata/submodules.txt
+          find "$OUT" -type f -name '*.ko' -exec cp -t artifacts/modules {} +
+          (cd artifacts && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > ../artifacts.SHA256SUMS.tmp && mv ../artifacts.SHA256SUMS.tmp SHA256SUMS)
+          test -s artifacts/Image
+
+      - name: Prepare AOSP boot image tools
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.package_device_images }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends erofs-utils
+          git clone https://android.googlesource.com/platform/system/tools/mkbootimg "$RUNNER_TEMP/mkbootimg-src"
+          git -C "$RUNNER_TEMP/mkbootimg-src" checkout 34ac1ae663fc8f553b2a96ee08b66c97ab2290c8
+          mkdir -p "$RUNNER_TEMP/android-host-tools"
+          install -m 0755 "$RUNNER_TEMP/mkbootimg-src/mkbootimg.py" "$RUNNER_TEMP/android-host-tools/mkbootimg"
+          install -m 0755 "$RUNNER_TEMP/mkbootimg-src/unpack_bootimg.py" "$RUNNER_TEMP/android-host-tools/unpack_bootimg"
+          echo "$RUNNER_TEMP/android-host-tools" >> "$GITHUB_PATH"
+          echo "PYTHONPATH=$RUNNER_TEMP/mkbootimg-src:${PYTHONPATH:-}" >> "$GITHUB_ENV"
+          export PYTHONPATH="$RUNNER_TEMP/mkbootimg-src:${PYTHONPATH:-}"
+          export PATH="$RUNNER_TEMP/android-host-tools:$PATH"
+          mkbootimg --help >/dev/null
+          unpack_bootimg --help >/dev/null
+          mkfs.erofs --help >/dev/null
+          fsck.erofs --help >/dev/null
+
+      - name: Download and verify private device dump
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.package_device_images }}
+        env:
+          DEVICE_DUMP_URL: ${{ secrets.DEVICE_DUMP_URL }}
+          DEVICE_DUMP_SHA256: ${{ secrets.DEVICE_DUMP_SHA256 }}
+        run: |
+          set -euo pipefail
+          test -n "$DEVICE_DUMP_URL" || { echo "Missing DEVICE_DUMP_URL secret" >&2; exit 2; }
+          test "${#DEVICE_DUMP_SHA256}" -eq 64 || { echo "DEVICE_DUMP_SHA256 must be 64 hex characters" >&2; exit 2; }
+          archive="$RUNNER_TEMP/p720s11-device-dump.tar.gz"
+          curl -fL --retry 3 --retry-delay 2 "$DEVICE_DUMP_URL" -o "$archive"
+          echo "$DEVICE_DUMP_SHA256  $archive" | sha256sum -c -
+          python3 - "$archive" <<'PY'
+          import sys, tarfile
+          with tarfile.open(sys.argv[1], "r:gz") as tf:
+              names = set(tf.getnames())
+          required = {"device_dump/boot_a.img", "device_dump/vendor_boot.img", "device_dump/vendor_dlkm.img"}
+          missing = required - names
+          if missing:
+              raise SystemExit("device dump archive missing: " + ", ".join(sorted(missing)))
+          if not any(n.startswith("vendor_dlkm_extract/lib/modules/") and n.endswith(".ko") for n in names):
+              raise SystemExit("archive must include vendor_dlkm_extract/lib/modules/*.ko")
+          PY
+          mkdir -p device-inputs
+          tar -xzf "$archive" -C device-inputs
+          test -s device-inputs/device_dump/boot_a.img
+          test -s device-inputs/device_dump/vendor_boot.img
+          test -s device-inputs/device_dump/vendor_dlkm.img
+          test -d device-inputs/vendor_dlkm_extract/lib/modules
+
+      - name: Rebuild stock-derived boot and vendor_dlkm images
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.package_device_images }}
+        env:
+          HOST_TOOLS_BIN: ${{ runner.temp }}/android-host-tools
+          DUMP: device-inputs/device_dump
+          IMGDIR: device-inputs
+        run: |
+          set -euo pipefail
+          OUT="$OUT" DUMP="$DUMP" IMGDIR="$IMGDIR" HOST_TOOLS_BIN="$HOST_TOOLS_BIN" ./package_stock_lto.sh
+          mkdir -p artifacts/images
+          install -m 0644 "$IMGDIR/boot_stock.img" artifacts/images/
+          install -m 0644 "$IMGDIR/vendor_dlkm_stock.img" artifacts/images/
+          (cd artifacts/images && sha256sum ./*.img > SHA256SUMS)
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p720s11-kernel-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14

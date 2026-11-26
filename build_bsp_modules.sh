@@ -63,11 +63,11 @@ for name in "$@"; do
     # warning is expected and harmless here.
     if make "${MAKEARGS[@]}" KBUILD_MODPOST_WARN=1 M="$od" src="$(pwd)/$src" modules > "$od/build.log" 2>&1; then
         ko=$(find "$od" -name "$name.ko" | head -1)
-        if [ -n "$ko" ]; then printf "  ✔ %-34s %9s B  (%s)\\n" "$name.ko" "$(stat -c%s "$ko")" "${src#kernel_modules/}"; built=$((built+1));
+        if [ -n "$ko" ]; then printf "  ✔ %-34s %9s B  (%s)\n" "$name.ko" "$(stat -c%s "$ko")" "${src#kernel_modules/}"; built=$((built+1));
         else echo "  ~ $name: 编译通过但无 .ko"; failed=$((failed+1)); fi
     else
         err=$(grep -m1 -E "error:|Error [0-9]" "$od/build.log" || true)
-        printf "  ✗ %-34s %s\\n" "$name" "${err:-见 $od/build.log}"; failed=$((failed+1))
+        printf "  ✗ %-34s %s\n" "$name" "${err:-见 $od/build.log}"; failed=$((failed+1))
     fi
 done
 echo "== 成功 $built / 失败 $failed =="

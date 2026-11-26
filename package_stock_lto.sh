@@ -5,13 +5,23 @@
 set -e
 cd "$(dirname "$0")"
 OUT=${OUT:-out_stock_lto2}
-DUMP=${DUMP:-/home/twodays/AOSP/device_dump}
+DUMP=${DUMP:-device_dump}
 IMGDIR=${IMGDIR:-out_images}
 WORK=$IMGDIR/work_pack
-export PATH=/home/twodays/AOSP/LineageOS-23/out/host/linux-x86/bin:$PATH
-
+# Optional Android host-tools directory; otherwise use tools already on PATH.
+if [[ -n "${HOST_TOOLS_DIR:-}" ]]; then
+    [[ -d "$HOST_TOOLS_DIR" ]] || { echo "HOST_TOOLS_DIR 不存在: $HOST_TOOLS_DIR" >&2; exit 1; }
+    export PATH="$HOST_TOOLS_DIR:$PATH"
+fi
+for tool in unpack_bootimg mkbootimg fsck.erofs mkfs.erofs; do
+    command -v "$tool" >/dev/null || { echo "缺少打包工具: $tool" >&2; exit 1; }
+done
+for file in "$DUMP/boot_a.img" "$DUMP/vendor_boot.img" "$DUMP/vendor_dlkm.img"; do
+    [ -s "$file" ] || { echo "缺少原厂镜像: $file" >&2; exit 1; }
+done
 [ -f "$OUT/arch/arm64/boot/Image" ] || { echo "缺少 $OUT/arch/arm64/boot/Image，请先编译"; exit 1; }
 mkdir -p "$WORK" "$IMGDIR"
+shopt -s nullglob
 
 echo "== 1. boot.img =="
 rm -rf "$WORK/boot"; mkdir -p "$WORK/boot"
@@ -25,7 +35,13 @@ echo "   $(stat -c%s "$IMGDIR/boot_stock.img") 字节"
 
 echo "== 2. vendor_dlkm.img =="
 STAGE="$WORK/vd"; rm -rf "$STAGE"; mkdir -p "$STAGE/lib/modules"
-# 2.1 原厂模块逐字节照搬
+# 2.1 从原厂 vendor_dlkm.img 提取模块（CI 不要求预先准备解包目录）
+if [ ! -s "$IMGDIR/vendor_dlkm_extract/lib/modules/modules.load" ]; then
+    rm -rf "$IMGDIR/vendor_dlkm_extract"
+    mkdir -p "$IMGDIR/vendor_dlkm_extract"
+    fsck.erofs --extract="$IMGDIR/vendor_dlkm_extract" "$DUMP/vendor_dlkm.img" >/dev/null
+fi
+[ -d "$IMGDIR/vendor_dlkm_extract/lib/modules" ] || { echo "vendor_dlkm 提取后缺少 lib/modules"; exit 1; }
 cp -a "$IMGDIR/vendor_dlkm_extract/lib/modules/." "$STAGE/lib/modules/"
 # 2.2 从设备 dump 解出模块清单（modules.load/dep/alias/softdep 等）
 rm -rf "$WORK/vdref"; mkdir -p "$WORK/vdref"

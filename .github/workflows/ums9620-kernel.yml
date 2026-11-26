@@ -1,0 +1,216 @@
+name: ZTE P720S11 / UMS9620 Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_bsp_modules:
+        description: Build all discoverable Unisoc BSP out-of-tree modules
+        type: boolean
+        required: true
+        default: true
+      package_images:
+        description: Build boot_stock.img and vendor_dlkm_stock.img (requires DEVICE_DUMP_URL secret)
+        type: boolean
+        required: true
+        default: false
+  push:
+    branches: [master]
+    paths:
+      - 'arch/arm64/**'
+      - 'drivers/**'
+      - 'kernel/**'
+      - 'kernel_modules/**'
+      - 'build_stock_lto.sh'
+      - 'build_bsp_modules.sh'
+      - 'package_stock_lto.sh'
+      - 'stock_p720s11.config'
+      - '.github/workflows/ums9620-kernel.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ums9620-kernel-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Linux 5.4.302 (P720S11)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      OUT: out_stock_lto2
+      CLANG_REVISION: clang-r563880c
+      PACKAGE_IMAGES: ${{ inputs.package_images || 'false' }}
+      BUILD_BSP_MODULES: ${{ inputs.build_bsp_modules || 'true' }}
+
+    steps:
+      - name: Checkout kernel and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install build and image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential cpio curl device-tree-compiler flex \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu git libelf-dev \
+            libncurses-dev libssl-dev lz4 erofs-utils python3 python3-pip \
+            rsync unzip zip zstd
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+
+      - name: Fetch pinned Android Clang r563880c
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOOLCHAIN_DIR="$RUNNER_TEMP/android-clang"
+          mkdir -p "$TOOLCHAIN_DIR"
+          git init "$TOOLCHAIN_DIR"
+          git -C "$TOOLCHAIN_DIR" remote add origin https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86
+          git -C "$TOOLCHAIN_DIR" config core.sparseCheckout true
+          mkdir -p "$TOOLCHAIN_DIR/.git/info"
+          printf 'clang-r563880c/\n' > "$TOOLCHAIN_DIR/.git/info/sparse-checkout"
+          git -C "$TOOLCHAIN_DIR" fetch --depth=1 origin 21b19c041de1f1df9b97fd9902ae5405c6cf8eb9
+          git -C "$TOOLCHAIN_DIR" checkout --detach FETCH_HEAD
+          CLANG_BIN="$TOOLCHAIN_DIR/clang-r563880c/bin"
+          test -x "$CLANG_BIN/clang"
+          test -x "$CLANG_BIN/ld.lld"
+          echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
+          echo "$CLANG_BIN" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=$TOOLCHAIN_DIR/clang-r563880c/lib64:$TOOLCHAIN_DIR/clang-r563880c/lib" >> "$GITHUB_ENV"
+          "$CLANG_BIN/clang" --version
+          "$CLANG_BIN/ld.lld" --version
+
+      - name: Prepare KernelSU submodule integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d KernelSU/kernel || {
+            echo "::error::KernelSU submodule did not provide KernelSU/kernel"
+            exit 1
+          }
+          if [[ ! -e drivers/kernelsu ]]; then
+            ln -s ../KernelSU/kernel drivers/kernelsu
+          fi
+          test -f drivers/kernelsu/Kconfig
+          test -f drivers/kernelsu/Makefile
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
+          grep -q 'kernelsu/' drivers/Makefile
+          echo "KernelSU integration verified."
+
+      - name: Build stock ThinLTO + CFI kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$OUT" CLANG_BIN="$CLANG_BIN" ./build_stock_lto.sh 2>&1 | tee build_kernel.log
+          test -s "$OUT/arch/arm64/boot/Image"
+          grep -q '^CONFIG_KSU=y$' "$OUT/.config"
+          grep -q '^CONFIG_LTO_CLANG_THIN=y$' "$OUT/.config"
+          grep -q '^CONFIG_CFI_CLANG=y$' "$OUT/.config"
+          echo "Kernel Image: $(stat -c%s "$OUT/arch/arm64/boot/Image") bytes"
+
+      - name: Build Unisoc BSP modules
+        if: env.BUILD_BSP_MODULES == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t BSP_MODULES < <(
+            grep -RhoE '^[[:space:]]*(export[[:space:]]+)?KO_MODULE_NAME[[:space:]]*:=[[:space:]]*[[:alnum:]_.+-]+' \
+              kernel_modules --include='Kbuild' --include='Makefile' 2>/dev/null \
+              | sed -E 's/.*:=[[:space:]]*//' | sort -u
+          )
+          if (( ${#BSP_MODULES[@]} == 0 )); then
+            echo "::warning::No KO_MODULE_NAME entries found under kernel_modules/"
+            exit 0
+          fi
+          printf 'Discovered %s BSP modules\n' "${#BSP_MODULES[@]}"
+          printf '%s\n' "${BSP_MODULES[@]}" | tee bsp-module-list.txt
+          if ! OUT="$OUT" CLANG_BIN="$CLANG_BIN" ./build_bsp_modules.sh "${BSP_MODULES[@]}" 2>&1 | tee build_bsp_modules.log; then
+            echo "::warning::Some BSP modules failed. See build_bsp_modules.log; successful modules will still be included."
+            echo "BSP module build was partial; inspect build_bsp_modules.log." > bsp-build-status.txt
+          else
+            echo "All discovered BSP modules built successfully." > bsp-build-status.txt
+          fi
+
+      - name: Stage kernel outputs
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/kernel dist/modules dist/logs
+          if [[ -s "$OUT/arch/arm64/boot/Image" ]]; then
+            cp "$OUT/arch/arm64/boot/Image" dist/kernel/Image
+          fi
+          [[ ! -f "$OUT/System.map" ]] || cp "$OUT/System.map" dist/kernel/
+          [[ ! -f "$OUT/.config" ]] || cp "$OUT/.config" dist/kernel/kernel.config
+          if [[ -d "$OUT" ]]; then
+            find "$OUT" -type f -name '*.ko' -print0 | while IFS= read -r -d '' file; do
+              mkdir -p "dist/modules/$(dirname "$file")"
+              cp "$file" "dist/modules/$file"
+            done
+          fi
+          [[ ! -f build_kernel.log ]] || cp build_kernel.log dist/logs/
+          [[ ! -f build_bsp_modules.log ]] || cp build_bsp_modules.log dist/logs/
+          [[ ! -f bsp-module-list.txt ]] || cp bsp-module-list.txt dist/logs/
+          [[ ! -f bsp-build-status.txt ]] || cp bsp-build-status.txt dist/logs/
+          if [[ -d dist ]]; then
+            (cd dist && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
+          fi
+
+      - name: Prepare Android boot image tools
+        if: env.PACKAGE_IMAGES == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 https://android.googlesource.com/platform/system/tools/mkbootimg "$RUNNER_TEMP/android-mkbootimg"
+          cat > /usr/local/bin/mkbootimg <<EOF
+          #!/usr/bin/env bash
+          exec python3 "$RUNNER_TEMP/android-mkbootimg/mkbootimg.py" "\$@"
+          EOF
+          cat > /usr/local/bin/unpack_bootimg <<EOF
+          #!/usr/bin/env bash
+          exec python3 "$RUNNER_TEMP/android-mkbootimg/unpack_bootimg.py" "\$@"
+          EOF
+          chmod +x /usr/local/bin/mkbootimg /usr/local/bin/unpack_bootimg
+          command -v fsck.erofs
+          command -v mkfs.erofs
+          command -v mkbootimg
+          command -v unpack_bootimg
+
+      - name: Package boot_stock.img and vendor_dlkm_stock.img
+        if: env.PACKAGE_IMAGES == 'true'
+        shell: bash
+        env:
+          DEVICE_DUMP_URL: ${{ secrets.DEVICE_DUMP_URL }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DEVICE_DUMP_URL:-}" ]]; then
+            echo "::error::PACKAGE_IMAGES=true but repository secret DEVICE_DUMP_URL is not configured."
+            exit 1
+          fi
+          DUMP_DIR="$RUNNER_TEMP/device_dump"
+          mkdir -p "$DUMP_DIR"
+          curl --fail --location --retry 3 --retry-delay 5 "$DEVICE_DUMP_URL" -o "$RUNNER_TEMP/device_dump.tar.gz"
+          tar -xzf "$RUNNER_TEMP/device_dump.tar.gz" -C "$DUMP_DIR"
+          for image in boot_a.img vendor_boot.img vendor_dlkm.img; do
+            found="$(find "$DUMP_DIR" -type f -name "$image" -print -quit)"
+            [[ -n "$found" ]] || { echo "::error::Archive is missing $image"; exit 1; }
+            if [[ "$found" != "$DUMP_DIR/$image" ]]; then cp "$found" "$DUMP_DIR/$image"; fi
+          done
+          DUMP="$DUMP_DIR" IMGDIR=out_images OUT="$OUT" ./package_stock_lto.sh 2>&1 | tee build_package.log
+          mkdir -p dist/images
+          cp out_images/boot_stock.img out_images/vendor_dlkm_stock.img dist/images/
+          cp build_package.log dist/logs/
+          (cd dist/images && sha256sum boot_stock.img vendor_dlkm_stock.img > SHA256SUMS)
+
+      - name: Upload kernel artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZTE-P720S11-UMS9620-${{ github.run_number }}-${{ github.sha }}
+          path: dist/
+          if-no-files-found: warn
+          retention-days: 30

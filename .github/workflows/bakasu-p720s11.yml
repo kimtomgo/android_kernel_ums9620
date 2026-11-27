@@ -81,12 +81,17 @@ jobs:
           sh KernelSU/kernel/setup.sh
           git -C KernelSU fetch --depth=1 origin "$BAKASU_REF"
           git -C KernelSU checkout --detach "$BAKASU_REF"
+          # The pinned BakaSU commit keeps UAPI headers at repo-root/uapi,
+          # while its Kbuild adds the kernel source root to the include path.
+          # Expose them under kernel/uapi so #include "uapi/supercall.h" resolves.
+          ln -sfn ../uapi KernelSU/kernel/uapi
           echo "BAKASU_COMMIT=$(git -C KernelSU rev-parse HEAD)" >> "$GITHUB_ENV"
           test -L drivers/kernelsu
           test -f drivers/kernelsu/Kconfig
           test -f drivers/kernelsu/Makefile
           grep -q 'obj-.*CONFIG_KSU.*kernelsu' drivers/Makefile
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
+          test -f drivers/kernelsu/uapi/supercall.h
           grep -Eq 'KERNEL_SU_UAPI_VERSION[[:space:]]*=[[:space:]]*6' drivers/kernelsu/uapi/supercall.h
           echo "BakaSU UAPI version: 6"
 

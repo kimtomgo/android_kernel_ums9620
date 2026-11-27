@@ -195,8 +195,9 @@ jobs:
 
           # The initialization banner is emitted by kernelsu_init() and proves
           # its diagnostic path is present in the linked image.
-          strings -a "$OUT/vmlinux" | grep -Fq 'Initialized with driver version:'
-          strings -a "$OUT/vmlinux" | grep -Fq 'ksu_uapi_version:'
+          strings -a "$OUT/vmlinux" > "$OUT/vmlinux.strings"
+          grep -Fq 'Initialized with driver version:' "$OUT/vmlinux.strings"
+          grep -Fq 'ksu_uapi_version:' "$OUT/vmlinux.strings"
           grep -qx 'CONFIG_KSU=y' "$OUT/.config"
           grep -qx 'CONFIG_KSU_MANUAL_HOOK=y' "$OUT/.config"
           grep -qx 'CONFIG_SECURITY_SELINUX=y' "$OUT/.config"

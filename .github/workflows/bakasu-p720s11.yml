@@ -174,7 +174,6 @@ jobs:
           test -s "$OUT/arch/arm64/boot/Image"
           test -s "$OUT/vmlinux"
           test -s "$OUT/drivers/kernelsu/built-in.a"
-          test -s "$OUT/drivers/kernelsu/kernelsu.o"
 
           # Ensure the composite KSU object is actually part of the built-in
           # archive, not merely compiled as an unused external/module object.

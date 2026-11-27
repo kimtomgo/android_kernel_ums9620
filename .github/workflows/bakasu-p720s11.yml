@@ -42,6 +42,16 @@ jobs:
           fetch-depth: 1
           submodules: false
 
+      - name: Clean kernel source generated state
+        run: |
+          set -euxo pipefail
+          # Kbuild refuses O= builds when generated config headers exist in srctree.
+          # Do this before KernelSU setup so generated-state cleanup cannot touch the integration.
+          make ARCH=arm64 mrproper
+          test ! -e .config
+          test ! -e include/config
+          test ! -e arch/arm64/include/generated
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -53,9 +63,13 @@ jobs:
           curl -fL --retry 5 --retry-delay 3 \
             "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/b5f16aee7b8af4c339972027e91e7e793c2e55d9/clang-r563880c.tar.gz" \
             | tar -xz -C "$RUNNER_TEMP/clang-r563880c"
-          echo "$RUNNER_TEMP/clang-r563880c/bin" >> "$GITHUB_PATH"
-          clang --version
           test -x "$RUNNER_TEMP/clang-r563880c/bin/clang"
+          echo "$RUNNER_TEMP/clang-r563880c/bin" >> "$GITHUB_PATH"
+          export PATH="$RUNNER_TEMP/clang-r563880c/bin:$PATH"
+          command -v clang
+          clang --version | tee "$RUNNER_TEMP/clang-version.txt"
+          grep -q 'clang version 21' "$RUNNER_TEMP/clang-version.txt"
+          test -x "$RUNNER_TEMP/clang-r563880c/bin/llvm-nm"
 
       - name: Integrate pinned BakaSU source
         run: |
@@ -70,8 +84,11 @@ jobs:
           echo "BAKASU_COMMIT=$(git -C KernelSU rev-parse HEAD)" >> "$GITHUB_ENV"
           test -L drivers/kernelsu
           test -f drivers/kernelsu/Kconfig
+          test -f drivers/kernelsu/Makefile
           grep -q 'obj-.*CONFIG_KSU.*kernelsu' drivers/Makefile
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
+          grep -Eq 'KERNEL_SU_UAPI_VERSION[[:space:]]*=[[:space:]]*6' drivers/kernelsu/uapi/supercall.h
+          echo "BakaSU UAPI version: 6"
 
       - name: Configure P720S11 with BakaSU Manual Hook
         run: |
@@ -114,11 +131,15 @@ jobs:
           test -s "$OUT/arch/arm64/boot/Image"
           test -s "$OUT/vmlinux"
           test -s "$OUT/drivers/kernelsu/built-in.a"
-          llvm-nm "$OUT/vmlinux" | grep -i 'ksu_' | head -n 30
+          llvm-nm --defined-only "$OUT/vmlinux" > "$OUT/vmlinux.symbols"
+          grep -E -i '(^|[[:space:]])(ksu_|kernel_su)' "$OUT/vmlinux.symbols" > "$OUT/ksu-symbols.txt"
+          test -s "$OUT/ksu-symbols.txt"
+          grep -Eq 'KERNEL_SU_UAPI_VERSION[[:space:]]*=[[:space:]]*6' drivers/kernelsu/uapi/supercall.h
           {
             echo "kernel_version=$(make -s O="$OUT" ARCH=arm64 kernelversion)"
             echo "bakasu_commit=$BAKASU_COMMIT"
-            echo "compiler=$(clang --version | head -n 1)"
+            echo "bakasu_uapi=6"
+            echo "compiler=$("$RUNNER_TEMP/clang-r563880c/bin/clang" --version | sed -n '1p')"
             echo "config=stock_p720s11.config + BakaSU Manual Hook"
           } > "$OUT/BUILD-INFO.txt"
 

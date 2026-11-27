@@ -1,0 +1,121 @@
+name: Rebuild KSU UAPI6 - ZTE P720S11
+
+on:
+  push:
+    branches:
+      - ksu-uapi6-matched-rebuild
+    paths:
+      - ".github/workflows/ksu-uapi6-rebuild.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ksu-uapi6-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout kernel and pinned KSU submodule
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential cpio curl flex gcc-aarch64-linux-gnu \
+            libelf-dev libssl-dev libncurses-dev lz4 python3 rsync unzip \
+            xz-utils zip zlib1g-dev
+          df -h
+
+      - name: Download the exact AOSP Clang revision used by this project
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/clang"
+          curl -fL --retry 5 --retry-delay 3 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-2026/clang-r563880c.tar.gz" \
+            -o "$RUNNER_TEMP/clang-r563880c.tar.gz"
+          tar -xzf "$RUNNER_TEMP/clang-r563880c.tar.gz" -C "$RUNNER_TEMP/clang"
+          CLANG_BIN="$(find "$RUNNER_TEMP/clang" -type f -name clang -perm -u+x -print -quit)"
+          test -n "$CLANG_BIN"
+          CLANG_DIR="$(dirname "$CLANG_BIN")"
+          echo "$CLANG_DIR" >> "$GITHUB_PATH"
+          "$CLANG_BIN" --version
+          echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
+
+      - name: Verify the pinned KernelSU source and UAPI
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_KSU_SHA="5785bdb8091304322f597f67d50e0b79f9815cb2"
+          ACTUAL_KSU_SHA="$(git -C KernelSU rev-parse HEAD)"
+          echo "Kernel commit: $(git rev-parse HEAD)"
+          echo "KernelSU submodule: $ACTUAL_KSU_SHA"
+          test "$ACTUAL_KSU_SHA" = "$EXPECTED_KSU_SHA"
+          UAPI_FILE="KernelSU/uapi/supercall.h"
+          grep -n "KERNEL_SU_UAPI_VERSION" "$UAPI_FILE"
+          UAPI="$(sed -nE 's/.*KERNEL_SU_UAPI_VERSION[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p' "$UAPI_FILE" | head -n1)"
+          test "$UAPI" = "6"
+          echo "KSU_UAPI_VERSION=$UAPI" >> "$GITHUB_ENV"
+
+      - name: Prepare the same stock-LTO build configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out_stock_lto2
+          cp .config out_stock_lto2/.config
+          grep -E '^(CONFIG_KSU|# CONFIG_KSU)' arch/arm64/configs/sprd_p720s11_defconfig
+          echo "Using build_stock_lto.sh; it imports KSU options from sprd_p720s11_defconfig and forces manual hook."
+          grep -E 'CONFIG_(LTO_CLANG|CFI_CLANG|KSU)' .config | head -n 80 || true
+
+      - name: Build kernel with the pinned KSU implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=out_stock_lto2 ./build_stock_lto.sh 2>&1 | tee ksu-kernel-build.log
+
+      - name: Verify KSU build configuration and output
+        shell: bash
+        run: |
+          set -euo pipefail
+          CFG=out_stock_lto2/.config
+          grep -qx 'CONFIG_KSU=y' "$CFG"
+          grep -qx 'CONFIG_KSU_MANUAL_HOOK=y' "$CFG"
+          ! grep -qx 'CONFIG_KSU_TRACEPOINT_HOOK=y' "$CFG"
+          test -s out_stock_lto2/arch/arm64/boot/Image
+          test -s out_stock_lto2/vmlinux
+          {
+            echo "Kernel repository: $GITHUB_REPOSITORY"
+            echo "Kernel commit: $(git rev-parse HEAD)"
+            echo "KernelSU submodule: $(git -C KernelSU rev-parse HEAD)"
+            echo "KernelSU UAPI: $KSU_UAPI_VERSION"
+            echo "Kernel version: $(make -s O=out_stock_lto2 ARCH=arm64 LLVM=1 kernelversion)"
+            echo "Compiler: $($CLANG_BIN --version | head -n1)"
+            echo "Config: CONFIG_KSU=y, CONFIG_KSU_MANUAL_HOOK=y, CONFIG_KSU_SUSFS=n"
+            echo "Built at: $(date -u +%FT%TZ)"
+          } | tee KSU-BUILD-MANIFEST.txt
+          sha256sum out_stock_lto2/arch/arm64/boot/Image out_stock_lto2/vmlinux > SHA256SUMS
+
+      - name: Upload KSU-matched kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZTE-P720S11-KSU-UAPI6-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            out_stock_lto2/arch/arm64/boot/Image
+            out_stock_lto2/vmlinux
+            out_stock_lto2/System.map
+            out_stock_lto2/Module.symvers
+            out_stock_lto2/.config
+            KSU-BUILD-MANIFEST.txt
+            SHA256SUMS
+            ksu-kernel-build.log

@@ -1,0 +1,147 @@
+name: BakaSU kernel - ZTE P720S11 (UMS9620)
+
+on:
+  workflow_dispatch:
+    inputs:
+      bakasu_ref:
+        description: "BakaSU commit/tag (blank = pinned known-good commit)"
+        required: false
+        default: "4ca505a878d9a3d9584417ef6b7fa443f2e516d5"
+  push:
+    paths:
+      - ".github/workflows/bakasu-p720s11.yml"
+      - "stock_p720s11.config"
+      - "Makefile"
+      - "drivers/Kconfig"
+      - "drivers/Makefile"
+      - "build_bakasu_ci.sh"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bakasu-p720s11-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      OUT: out-bakasu
+      BAKASU_REF: ${{ inputs.bakasu_ref || '4ca505a878d9a3d9584417ef6b7fa443f2e516d5' }}
+      KBUILD_BUILD_USER: github-actions
+      KBUILD_BUILD_HOST: p720s11-bakasu-ci
+      KBUILD_BUILD_TIMESTAMP: "Sat Nov 28 04:00:00 UTC 2026"
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential cpio flex gcc-aarch64-linux-gnu git libelf-dev libssl-dev lld lz4 python3 rsync tar xz-utils
+
+      - name: Download pinned AOSP Clang 21 toolchain
+        run: |
+          mkdir -p "$RUNNER_TEMP/clang-r563880c"
+          curl -fL --retry 5 --retry-delay 3 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/b5f16aee7b8af4c339972027e91e7e793c2e55d9/clang-r563880c.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP/clang-r563880c"
+          echo "$RUNNER_TEMP/clang-r563880c/bin" >> "$GITHUB_PATH"
+          clang --version
+          test -x "$RUNNER_TEMP/clang-r563880c/bin/clang"
+
+      - name: Integrate pinned BakaSU source
+        run: |
+          set -euxo pipefail
+          rm -rf KernelSU
+          git clone --filter=blob:none https://github.com/Baka-SU/BakaSU.git KernelSU
+          # Let the upstream setup script create the drivers/kernelsu link.
+          (cd KernelSU && git checkout main)
+          sh KernelSU/kernel/setup.sh
+          git -C KernelSU fetch --depth=1 origin "$BAKASU_REF"
+          git -C KernelSU checkout --detach "$BAKASU_REF"
+          echo "BAKASU_COMMIT=$(git -C KernelSU rev-parse HEAD)" >> "$GITHUB_ENV"
+          test -L drivers/kernelsu
+          test -f drivers/kernelsu/Kconfig
+          grep -q 'obj-.*CONFIG_KSU.*kernelsu' drivers/Makefile
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
+
+      - name: Configure P720S11 with BakaSU Manual Hook
+        run: |
+          set -euxo pipefail
+          test -s stock_p720s11.config
+          mkdir -p "$OUT"
+          cp stock_p720s11.config "$OUT/.config"
+          scripts/config --file "$OUT/.config" \
+            -e KSU \
+            -e KSU_MULTI_MANAGER_SUPPORT \
+            -e KSU_MANUAL_HOOK \
+            -d KSU_TRACEPOINT_HOOK \
+            -d KSU_SUSFS \
+            -e KSU_MANUAL_HOOK_AUTO_SETUID_HOOK \
+            -e KSU_MANUAL_HOOK_AUTO_INITRC_HOOK \
+            -e KSU_MANUAL_HOOK_AUTO_INPUT_HOOK \
+            -d WERROR
+          make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          grep -qx 'CONFIG_KSU=y' "$OUT/.config"
+          grep -qx 'CONFIG_KSU_MANUAL_HOOK=y' "$OUT/.config"
+          grep -qx 'CONFIG_KSU_MULTI_MANAGER_SUPPORT=y' "$OUT/.config"
+          grep -qx 'CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y' "$OUT/.config"
+          grep -qx 'CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y' "$OUT/.config"
+          grep -qx 'CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y' "$OUT/.config"
+          ! grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y' "$OUT/.config"
+          ! grep -q '^CONFIG_KSU_SUSFS=y' "$OUT/.config"
+          make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 kernelversion
+          echo "Kernel config validated for P720S11 / Linux 5.4.302"
+
+      - name: Build kernel Image and modules
+        run: |
+          set -o pipefail
+          make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            KCFLAGS="-Wno-error=enum-compare -Wno-error=compare-distinct-pointer-types -Wno-error=strict-prototypes" \
+            -j"$(nproc)" Image modules 2>&1 | tee "$OUT/build.log"
+
+      - name: Verify built-in KSU objects and kernel image
+        run: |
+          set -euxo pipefail
+          test -s "$OUT/arch/arm64/boot/Image"
+          test -s "$OUT/vmlinux"
+          test -s "$OUT/drivers/kernelsu/built-in.a"
+          llvm-nm "$OUT/vmlinux" | grep -i 'ksu_' | head -n 30
+          {
+            echo "kernel_version=$(make -s O="$OUT" ARCH=arm64 kernelversion)"
+            echo "bakasu_commit=$BAKASU_COMMIT"
+            echo "compiler=$(clang --version | head -n 1)"
+            echo "config=stock_p720s11.config + BakaSU Manual Hook"
+          } > "$OUT/BUILD-INFO.txt"
+
+      - name: Package kernel build artifacts
+        run: |
+          set -euxo pipefail
+          mkdir -p release/modules
+          cp "$OUT/arch/arm64/boot/Image" release/Image
+          cp "$OUT/.config" release/kernel.config
+          cp "$OUT/System.map" release/System.map
+          cp "$OUT/Module.symvers" release/Module.symvers
+          cp "$OUT/BUILD-INFO.txt" release/BUILD-INFO.txt
+          find "$OUT" -type f -name '*.ko' -exec cp --parents '{}' release/modules/ \;
+          tar -cJf "P720S11_BakaSU_5.4.302_${GITHUB_RUN_NUMBER}.tar.xz" release
+          sha256sum "P720S11_BakaSU_5.4.302_${GITHUB_RUN_NUMBER}.tar.xz" > SHA256SUMS.txt
+
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: P720S11-BakaSU-5.4.302-${{ github.run_number }}
+          path: |
+            P720S11_BakaSU_5.4.302_${{ github.run_number }}.tar.xz
+            SHA256SUMS.txt
+            out-bakasu/build.log
+          if-no-files-found: error
+          retention-days: 30

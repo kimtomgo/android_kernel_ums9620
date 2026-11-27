@@ -2,11 +2,6 @@ name: BakaSU kernel - ZTE P720S11 (UMS9620)
 
 on:
   workflow_dispatch:
-    inputs:
-      bakasu_ref:
-        description: "BakaSU commit/tag (blank = pinned known-good commit)"
-        required: false
-        default: "4ca505a878d9a3d9584417ef6b7fa443f2e516d5"
   push:
     paths:
       - ".github/workflows/bakasu-p720s11.yml"
@@ -14,13 +9,18 @@ on:
       - "Makefile"
       - "drivers/Kconfig"
       - "drivers/Makefile"
-      - "build_bakasu_ci.sh"
+      - "security/security.c"
+      - "kernel/sys.c"
+      - "fs/read_write.c"
+      - "drivers/input/input.c"
 
 permissions:
   contents: read
 
 concurrency:
-  group: bakasu-p720s11-${{ github.ref }}
+  # Each commit gets its own concurrency group so a new validated build can run
+  # alongside an older attempt instead of waiting behind it.
+  group: bakasu-p720s11-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -31,7 +31,8 @@ jobs:
       ARCH: arm64
       SUBARCH: arm64
       OUT: out-bakasu
-      BAKASU_REF: ${{ inputs.bakasu_ref || '4ca505a878d9a3d9584417ef6b7fa443f2e516d5' }}
+      BAKASU_REPO: https://github.com/Baka-SU/BakaSU.git
+      BAKASU_REF: 4ca505a878d9a3d9584417ef6b7fa443f2e516d5
       KBUILD_BUILD_USER: github-actions
       KBUILD_BUILD_HOST: p720s11-bakasu-ci
       KBUILD_BUILD_TIMESTAMP: "Sat Nov 28 04:00:00 UTC 2026"
@@ -73,28 +74,56 @@ jobs:
           grep -q 'clang version 21' "$RUNNER_TEMP/clang-version.txt"
           test -x "$RUNNER_TEMP/clang-r563880c/bin/llvm-nm"
 
-      - name: Integrate pinned BakaSU source
+      - name: Integrate exact pinned BakaSU source
         run: |
           set -euxo pipefail
-          rm -rf KernelSU
-          git clone --filter=blob:none https://github.com/Baka-SU/BakaSU.git KernelSU
-          # Let the upstream setup script create the drivers/kernelsu link.
-          (cd KernelSU && git checkout main)
-          sh KernelSU/kernel/setup.sh
-          git -C KernelSU fetch --depth=1 origin "$BAKASU_REF"
+
+          # Fetch full commit history: BakaSU's Kbuild derives its manager
+          # version code from git rev-list, so a shallow checkout changes it.
+          rm -rf KernelSU drivers/kernelsu
+          git clone --filter=blob:none --no-checkout "$BAKASU_REPO" KernelSU
           git -C KernelSU checkout --detach "$BAKASU_REF"
-          # The pinned BakaSU commit keeps UAPI headers at repo-root/uapi,
-          # while its Kbuild adds the kernel source root to the include path.
-          # Expose them under kernel/uapi so #include "uapi/supercall.h" resolves.
-          ln -sfn ../uapi KernelSU/kernel/uapi
-          echo "BAKASU_COMMIT=$(git -C KernelSU rev-parse HEAD)" >> "$GITHUB_ENV"
+
+          ACTUAL_BAKASU_COMMIT="$(git -C KernelSU rev-parse HEAD)"
+          test "$ACTUAL_BAKASU_COMMIT" = "$BAKASU_REF"
+          test "$(git -C KernelSU rev-parse --is-shallow-repository)" = "false"
+
+          # Reproduce the upstream setup result directly, without executing
+          # setup.sh from a moving branch. drivers/kernelsu -> KernelSU/kernel.
+          ln -s ../KernelSU/kernel drivers/kernelsu
+
+          # This pinned revision stores UAPI at repo-root/uapi. Its Kbuild
+          # includes uapi/supercall.h relative to the kernel source directory.
+          ln -s ../uapi KernelSU/kernel/uapi
+
           test -L drivers/kernelsu
+          test "$(realpath drivers/kernelsu)" = "$(realpath KernelSU/kernel)"
+          test -L KernelSU/kernel/uapi
+          test "$(realpath KernelSU/kernel/uapi)" = "$(realpath KernelSU/uapi)"
           test -f drivers/kernelsu/Kconfig
+          test -f drivers/kernelsu/Kbuild
           test -f drivers/kernelsu/Makefile
-          grep -q 'obj-.*CONFIG_KSU.*kernelsu' drivers/Makefile
-          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
+          test -f drivers/kernelsu/core/init.c
+          test -f drivers/kernelsu/hook/lsm_hooks.c
+          test -f drivers/kernelsu/supercall/supercall.c
           test -f drivers/kernelsu/uapi/supercall.h
+
+          grep -Fq 'obj-$(CONFIG_KSU)' drivers/kernelsu/Kbuild
+          grep -Fq 'obj-$(CONFIG_KSU)' drivers/Makefile
+          grep -Fq 'drivers/kernelsu/Kconfig' drivers/Kconfig
           grep -Eq 'KERNEL_SU_UAPI_VERSION[[:space:]]*=[[:space:]]*6' drivers/kernelsu/uapi/supercall.h
+
+          # Verify this revision's built-in init path and the selected LSM hook.
+          grep -Fq 'module_init(kernelsu_init);' drivers/kernelsu/core/init.c
+          grep -Fq 'ksu_supercalls_init();' drivers/kernelsu/core/init.c
+          grep -Fq 'ksu_hook_init();' drivers/kernelsu/core/init.c
+          grep -Fq 'security_add_hooks(ksu_hooks' drivers/kernelsu/hook/lsm_hooks.c
+          grep -Fq 'LSM_HOOK_INIT(task_fix_setuid, ksu_task_fix_setuid)' drivers/kernelsu/hook/lsm_hooks.c
+
+          echo "BAKASU_COMMIT=$ACTUAL_BAKASU_COMMIT" >> "$GITHUB_ENV"
+          echo "BAKASU_VERSION_CODE=$(git -C KernelSU rev-list --count HEAD)" >> "$GITHUB_ENV"
+          echo "BakaSU commit: $ACTUAL_BAKASU_COMMIT"
+          echo "BakaSU full-history commit count: $(git -C KernelSU rev-list --count HEAD)"
           echo "BakaSU UAPI version: 6"
 
       - name: Configure P720S11 with BakaSU Manual Hook
@@ -120,10 +149,16 @@ jobs:
           grep -qx 'CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y' "$OUT/.config"
           grep -qx 'CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y' "$OUT/.config"
           grep -qx 'CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y' "$OUT/.config"
+          grep -qx 'CONFIG_SECURITY=y' "$OUT/.config"
+          grep -qx 'CONFIG_SECURITY_SELINUX=y' "$OUT/.config"
           ! grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y' "$OUT/.config"
           ! grep -q '^CONFIG_KSU_SUSFS=y' "$OUT/.config"
-          make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 kernelversion
-          echo "Kernel config validated for P720S11 / Linux 5.4.302"
+
+          # Kernel 5.4 uses the pre-6.8 LSM built-in hook registration path.
+          test "$(make -s O="$OUT" ARCH=arm64 kernelversion)" = "5.4.302"
+          grep -Fq 'ksu_lsm_hook_built_in_init();' drivers/kernelsu/core/init.c
+          grep -Fq 'ksu_supercalls_init();' drivers/kernelsu/core/init.c
+          echo "Kernel config validated for P720S11 / Linux 5.4.302; BakaSU Manual Hook + SELinux LSM."
 
       - name: Build kernel Image and modules
         run: |
@@ -132,22 +167,54 @@ jobs:
             KCFLAGS="-Wno-error=enum-compare -Wno-error=compare-distinct-pointer-types -Wno-error=strict-prototypes" \
             -j"$(nproc)" Image modules 2>&1 | tee "$OUT/build.log"
 
-      - name: Verify built-in KSU objects and kernel image
+      - name: Verify built-in KSU initialization path and kernel image
         run: |
           set -euxo pipefail
+          LLVM_BIN="$RUNNER_TEMP/clang-r563880c/bin"
           test -s "$OUT/arch/arm64/boot/Image"
           test -s "$OUT/vmlinux"
           test -s "$OUT/drivers/kernelsu/built-in.a"
-          llvm-nm --defined-only "$OUT/vmlinux" > "$OUT/vmlinux.symbols"
-          grep -E -i '(^|[[:space:]])(ksu_|kernel_su)' "$OUT/vmlinux.symbols" > "$OUT/ksu-symbols.txt"
-          test -s "$OUT/ksu-symbols.txt"
+          test -s "$OUT/drivers/kernelsu/kernelsu.o"
+
+          # Ensure the composite KSU object is actually part of the built-in
+          # archive, not merely compiled as an unused external/module object.
+          "$LLVM_BIN/llvm-ar" t "$OUT/drivers/kernelsu/built-in.a" > "$OUT/ksu-archive-members.txt"
+          grep -Fxq 'kernelsu.o' "$OUT/ksu-archive-members.txt"
+
+          # Confirm the built-in init function, supercall dispatcher and LSM
+          # registration functions survived linking into the final vmlinux.
+          "$LLVM_BIN/llvm-nm" --defined-only "$OUT/vmlinux" > "$OUT/vmlinux.symbols"
+          : > "$OUT/ksu-symbols.txt"
+          for symbol in kernelsu_init ksu_supercalls_init ksu_lsm_hook_built_in_init; do
+            if ! grep -Eq "[[:space:]]${symbol}$" "$OUT/vmlinux.symbols"; then
+              echo "Missing required built-in BakaSU symbol: $symbol" >&2
+              exit 1
+            fi
+            grep -E "[[:space:]]${symbol}$" "$OUT/vmlinux.symbols" >> "$OUT/ksu-symbols.txt"
+          done
+
+          # The initialization banner is emitted by kernelsu_init() and proves
+          # its diagnostic path is present in the linked image.
+          strings -a "$OUT/vmlinux" | grep -Fq 'Initialized with driver version:'
+          strings -a "$OUT/vmlinux" | grep -Fq 'ksu_uapi_version:'
+          grep -qx 'CONFIG_KSU=y' "$OUT/.config"
+          grep -qx 'CONFIG_KSU_MANUAL_HOOK=y' "$OUT/.config"
+          grep -qx 'CONFIG_SECURITY_SELINUX=y' "$OUT/.config"
           grep -Eq 'KERNEL_SU_UAPI_VERSION[[:space:]]*=[[:space:]]*6' drivers/kernelsu/uapi/supercall.h
+
           {
             echo "kernel_version=$(make -s O="$OUT" ARCH=arm64 kernelversion)"
+            echo "device=ZTE P720S11 / UMS9620"
+            echo "bakasu_repo=$BAKASU_REPO"
             echo "bakasu_commit=$BAKASU_COMMIT"
+            echo "bakasu_commit_count=$BAKASU_VERSION_CODE"
             echo "bakasu_uapi=6"
-            echo "compiler=$("$RUNNER_TEMP/clang-r563880c/bin/clang" --version | sed -n '1p')"
+            echo "hook=Manual Hook (LSM auto setuid/initrc + input_handler)"
+            echo "compiler=$("$LLVM_BIN/clang" --version | sed -n '1p')"
             echo "config=stock_p720s11.config + BakaSU Manual Hook"
+            echo "CI proves built-in init/supercall/LSM symbols are linked; runtime boot initialization must still be checked on-device."
+            echo "After boot: adb shell dmesg | grep -E 'Initialized with driver version:|ksu_lsm_hook_built_in_init|BakaSU'"
+            echo "Expected banner includes: Work mode: Built-in, ksu_uapi_version: 6"
           } > "$OUT/BUILD-INFO.txt"
 
       - name: Package kernel build artifacts

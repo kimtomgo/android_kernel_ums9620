@@ -66,15 +66,25 @@ jobs:
           test "$UAPI" = "6"
           echo "KSU_UAPI_VERSION=$UAPI" >> "$GITHUB_ENV"
 
+      - name: Clean stale in-tree kernel build state
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The repository tracks its baseline .config. Preserve it before mrproper,
+          # which removes generated Kbuild state and the root .config.
+          cp .config "$RUNNER_TEMP/p720s11-base.config"
+          make ARCH=arm64 mrproper
+          mkdir -p out_stock_lto2
+          cp "$RUNNER_TEMP/p720s11-base.config" out_stock_lto2/.config
+          test -s out_stock_lto2/.config
+
       - name: Prepare the same stock-LTO build configuration
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p out_stock_lto2
-          cp .config out_stock_lto2/.config
           grep -E '^(CONFIG_KSU|# CONFIG_KSU)' arch/arm64/configs/sprd_p720s11_defconfig
           echo "Using build_stock_lto.sh; it imports KSU options from sprd_p720s11_defconfig and forces manual hook."
-          grep -E 'CONFIG_(LTO_CLANG|CFI_CLANG|KSU)' .config | head -n 80 || true
+          grep -E 'CONFIG_(LTO_CLANG|CFI_CLANG|KSU)' out_stock_lto2/.config | head -n 80 || true
 
       - name: Build kernel with the pinned KSU implementation
         shell: bash

@@ -46,8 +46,10 @@ jobs:
         run: |
           set -euxo pipefail
           # Kbuild refuses O= builds when generated config headers exist in srctree.
-          # Do this before KernelSU setup so generated-state cleanup cannot touch the integration.
-          make ARCH=arm64 mrproper
+          # The vendor tree has a broken Mali clean dependency, so avoid the recursive
+          # mrproper target and remove only the generated paths checked by Kbuild.
+          rm -f .config
+          rm -rf include/config include/generated arch/arm64/include/generated
           test ! -e .config
           test ! -e include/config
           test ! -e arch/arm64/include/generated

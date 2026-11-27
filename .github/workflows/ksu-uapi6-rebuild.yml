@@ -44,7 +44,7 @@ jobs:
             "https://github.com/SA9990/Toolchain/releases/download/clang-r563880c/clang-r563880c.tar.gz" \
             -o "$RUNNER_TEMP/clang-r563880c.tar.gz"
           tar -xzf "$RUNNER_TEMP/clang-r563880c.tar.gz" -C "$RUNNER_TEMP/clang"
-          CLANG_BIN="$(find "$RUNNER_TEMP/clang" -name clang -executable -print -quit)"
+          CLANG_BIN="$(find "$RUNNER_TEMP/clang" -type f -name clang -perm -u+x -print -quit)"
           test -n "$CLANG_BIN"
           CLANG_DIR="$(dirname "$CLANG_BIN")"
           echo "$CLANG_DIR" >> "$GITHUB_PATH"

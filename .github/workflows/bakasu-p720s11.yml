@@ -175,13 +175,11 @@ jobs:
           test -s "$OUT/vmlinux"
           test -s "$OUT/drivers/kernelsu/built-in.a"
 
-          # Ensure the composite KSU object is actually part of the built-in
-          # archive, not merely compiled as an unused external/module object.
+          # Verify BakaSU symbols are present in the actual built-in archive.
           "$LLVM_BIN/llvm-nm" --defined-only "$OUT/drivers/kernelsu/built-in.a" > "$OUT/ksu-archive.symbols"
-          grep -Eq '[[:space:]]kernelsu_init
+          grep -Eq '[[:space:]]kernelsu_init$' "$OUT/ksu-archive.symbols"
 
-          # Confirm the built-in init function, supercall dispatcher and LSM
-          # registration functions survived linking into the final vmlinux.
+          # Confirm the init, supercall dispatcher and LSM hook are linked into vmlinux.
           "$LLVM_BIN/llvm-nm" --defined-only "$OUT/vmlinux" > "$OUT/vmlinux.symbols"
           : > "$OUT/ksu-symbols.txt"
           for symbol in kernelsu_init ksu_supercalls_init ksu_lsm_hook_built_in_init; do
@@ -192,8 +190,6 @@ jobs:
             grep -E "[[:space:]]${symbol}$" "$OUT/vmlinux.symbols" >> "$OUT/ksu-symbols.txt"
           done
 
-          # The initialization banner is emitted by kernelsu_init() and proves
-          # its diagnostic path is present in the linked image.
           strings -a "$OUT/vmlinux" > "$OUT/vmlinux.strings"
           grep -Fq 'Initialized with driver version:' "$OUT/vmlinux.strings"
           grep -Fq 'ksu_uapi_version:' "$OUT/vmlinux.strings"
@@ -212,7 +208,7 @@ jobs:
             echo "hook=Manual Hook (LSM auto setuid/initrc + input_handler)"
             echo "compiler=$("$LLVM_BIN/clang" --version | sed -n '1p')"
             echo "config=stock_p720s11.config + BakaSU Manual Hook"
-            echo "CI proves built-in init/supercall/LSM symbols are linked; runtime boot initialization must still be checked on-device."
+            echo "CI verifies linked symbols; runtime boot initialization must still be checked on-device."
             echo "After boot: adb shell dmesg | grep -E 'Initialized with driver version:|ksu_lsm_hook_built_in_init|BakaSU'"
             echo "Expected banner includes: Work mode: Built-in, ksu_uapi_version: 6"
           } > "$OUT/BUILD-INFO.txt"

@@ -177,8 +177,70 @@ jobs:
 
           # Ensure the composite KSU object is actually part of the built-in
           # archive, not merely compiled as an unused external/module object.
-          "$LLVM_BIN/llvm-ar" t "$OUT/drivers/kernelsu/built-in.a" > "$OUT/ksu-archive-members.txt"
-          grep -Fxq 'kernelsu.o' "$OUT/ksu-archive-members.txt"
+          "$LLVM_BIN/llvm-nm" --defined-only "$OUT/drivers/kernelsu/built-in.a" > "$OUT/ksu-archive.symbols"
+          grep -Eq '[[:space:]]kernelsu_init
+
+          # Confirm the built-in init function, supercall dispatcher and LSM
+          # registration functions survived linking into the final vmlinux.
+          "$LLVM_BIN/llvm-nm" --defined-only "$OUT/vmlinux" > "$OUT/vmlinux.symbols"
+          : > "$OUT/ksu-symbols.txt"
+          for symbol in kernelsu_init ksu_supercalls_init ksu_lsm_hook_built_in_init; do
+            if ! grep -Eq "[[:space:]]${symbol}$" "$OUT/vmlinux.symbols"; then
+              echo "Missing required built-in BakaSU symbol: $symbol" >&2
+              exit 1
+            fi
+            grep -E "[[:space:]]${symbol}$" "$OUT/vmlinux.symbols" >> "$OUT/ksu-symbols.txt"
+          done
+
+          # The initialization banner is emitted by kernelsu_init() and proves
+          # its diagnostic path is present in the linked image.
+          strings -a "$OUT/vmlinux" > "$OUT/vmlinux.strings"
+          grep -Fq 'Initialized with driver version:' "$OUT/vmlinux.strings"
+          grep -Fq 'ksu_uapi_version:' "$OUT/vmlinux.strings"
+          grep -qx 'CONFIG_KSU=y' "$OUT/.config"
+          grep -qx 'CONFIG_KSU_MANUAL_HOOK=y' "$OUT/.config"
+          grep -qx 'CONFIG_SECURITY_SELINUX=y' "$OUT/.config"
+          grep -Eq 'KERNEL_SU_UAPI_VERSION[[:space:]]*=[[:space:]]*6' drivers/kernelsu/uapi/supercall.h
+
+          {
+            echo "kernel_version=$(make -s O="$OUT" ARCH=arm64 kernelversion)"
+            echo "device=ZTE P720S11 / UMS9620"
+            echo "bakasu_repo=$BAKASU_REPO"
+            echo "bakasu_commit=$BAKASU_COMMIT"
+            echo "bakasu_commit_count=$BAKASU_VERSION_CODE"
+            echo "bakasu_uapi=6"
+            echo "hook=Manual Hook (LSM auto setuid/initrc + input_handler)"
+            echo "compiler=$("$LLVM_BIN/clang" --version | sed -n '1p')"
+            echo "config=stock_p720s11.config + BakaSU Manual Hook"
+            echo "CI proves built-in init/supercall/LSM symbols are linked; runtime boot initialization must still be checked on-device."
+            echo "After boot: adb shell dmesg | grep -E 'Initialized with driver version:|ksu_lsm_hook_built_in_init|BakaSU'"
+            echo "Expected banner includes: Work mode: Built-in, ksu_uapi_version: 6"
+          } > "$OUT/BUILD-INFO.txt"
+
+      - name: Package kernel build artifacts
+        run: |
+          set -euxo pipefail
+          mkdir -p release/modules
+          cp "$OUT/arch/arm64/boot/Image" release/Image
+          cp "$OUT/.config" release/kernel.config
+          cp "$OUT/System.map" release/System.map
+          cp "$OUT/Module.symvers" release/Module.symvers
+          cp "$OUT/BUILD-INFO.txt" release/BUILD-INFO.txt
+          find "$OUT" -type f -name '*.ko' -exec cp --parents '{}' release/modules/ \;
+          tar -cJf "P720S11_BakaSU_5.4.302_${GITHUB_RUN_NUMBER}.tar.xz" release
+          sha256sum "P720S11_BakaSU_5.4.302_${GITHUB_RUN_NUMBER}.tar.xz" > SHA256SUMS.txt
+
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: P720S11-BakaSU-5.4.302-${{ github.run_number }}
+          path: |
+            P720S11_BakaSU_5.4.302_${{ github.run_number }}.tar.xz
+            SHA256SUMS.txt
+            out-bakasu/build.log
+          if-no-files-found: error
+          retention-days: 30
+ "$OUT/ksu-archive.symbols"
 
           # Confirm the built-in init function, supercall dispatcher and LSM
           # registration functions survived linking into the final vmlinux.
